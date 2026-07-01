@@ -1,0 +1,29 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
+
+# DepthAI cache
+.cache/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Training artifacts
+*.blob
+*.onnx
+*.engine
+
+# Dataset (optional - we'll decide later)
+# datasets/
+
+# Crash dumps
+*.tar.gz

@@ -1,3 +1,5 @@
+from turtle import distance
+
 from robot_project.detection.yolo import ObjectDetector
 
 
@@ -36,12 +38,17 @@ class Detector:
             cy = max(0, min(cy, h - 1))
 
             distance = int(depth_frame[cy, cx])
+            
+
+            if distance == 0:
+                continue
 
             # store structured result
             detections.append({
-                "class": label,
-                "confidence": conf,
-                "distance_mm": distance
-            })
+                 "class": label,
+                 "confidence": conf,
+                 "distance_mm": distance,
+                 "center": (cx, cy)
+        })
 
         return detections, results[0].plot()

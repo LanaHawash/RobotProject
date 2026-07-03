@@ -1,7 +1,7 @@
 
 
 
-
+from robot_project.world.manager import ObjectManager
 from flask import Flask, Response
 import cv2
 
@@ -11,6 +11,7 @@ from robot_project.detection.detector import Detector
 
 camera = CameraPipeline()
 detector = Detector()
+manager = ObjectManager()
 camera.create_rgb()
 camera.create_depth()
 
@@ -31,8 +32,15 @@ def generate_frames():
         depth_frame = camera.depth_queue.get().getCvFrame()
 
         results, frame = detector.detect(frame, depth_frame)
-
+        manager.update(results)
       
+        closest = manager.get_closest_object()
+
+        if closest:
+            print(
+                f"Closest: {closest.label} "
+                f"({closest.distance_mm} mm)"
+            )
         depth_frame = camera.depth_queue.get().getCvFrame()
         height, width = depth_frame.shape
 
@@ -40,8 +48,7 @@ def generate_frames():
         center_y = height // 2
 
        
-        for d in results:
-            print(d)
+        
         
         _, buffer = cv2.imencode(".jpg", frame)
 

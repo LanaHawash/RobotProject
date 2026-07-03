@@ -47,6 +47,10 @@ class CameraPipeline:
         )
 
         self.stereo = self.pipeline.create(dai.node.StereoDepth)
+        self.stereo.setLeftRightCheck(True)
+        self.stereo.setSubpixel(True)
+        self.stereo.setExtendedDisparity(False)
+      
 
         left_out.link(self.stereo.left)
         right_out.link(self.stereo.right)

@@ -1,3 +1,5 @@
+from turtle import width
+
 from flask import Flask, Response
 import cv2
 
@@ -12,7 +14,7 @@ camera.create_depth()
 
 import threading
 
-threading.Thread(target=camera.debug_depth, daemon=True).start()
+#threading.Thread(target=camera.debug_depth, daemon=True).start()
 camera.start()
 
 app = Flask(__name__)
@@ -23,7 +25,24 @@ def generate_frames():
     while camera.is_running():
 
         frame = camera.rgb_queue.get().getCvFrame()
+        depth_frame = camera.depth_queue.get().getCvFrame()
+        height, width = depth_frame.shape
 
+        center_x = width // 2
+        center_y = height // 2
+
+        distance = depth_frame[center_y, center_x]
+
+        cv2.putText(
+             frame,
+             f"Distance: {distance} mm",
+             (20, 40),
+             cv2.FONT_HERSHEY_SIMPLEX,
+             1,
+             (0, 255, 0),
+             2
+        )
+        
         _, buffer = cv2.imencode(".jpg", frame)
 
         frame_bytes = buffer.tobytes()
@@ -64,7 +83,12 @@ def depth():
         while camera.is_running():
             frame = camera.depth_queue.get().getCvFrame()
 
-            import cv2
+            frame = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX)
+            frame = frame.astype("uint8")
+
+            frame = cv2.medianBlur(frame, 5)
+
+            
             _, buffer = cv2.imencode(".jpg", frame)
 
             yield (

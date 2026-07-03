@@ -1,27 +1,36 @@
 # RobotProject
 
-An autonomous mobile robot that detects, classifies, approaches, and sorts scattered toys using an OAK-D camera, Raspberry Pi 5, Arduino Uno, and a robotic arm.
+A mobile robot that detects, classifies, and sorts scattered toys using an OAK-D camera, Raspberry Pi 5, Arduino Uno, and a robotic arm.
 
 ---
 
 ## Overview
 
-RobotProject is my graduation project. The robot navigates through a room, detects toys using computer vision, estimates their distance using stereo depth, classifies them into predefined categories, and autonomously picks them up with a robotic arm.
+RobotProject is my graduation project. The robot uses computer vision and stereo depth to detect objects, estimate their distance, and prepare them for robotic manipulation.
 
-The system is designed with a modular architecture that separates perception, decision making, and hardware control.
+The software is designed with a modular architecture that separates perception, decision making, and hardware control. The current implementation focuses on building a reliable perception pipeline before integrating navigation, communication, and robotic manipulation.
 
 ---
 
 ## Features
 
+### Implemented
+
 - Live RGB camera streaming
 - Stereo depth estimation
+- Depth map visualization
 - YOLO object detection
-- Custom toy classification
-- Distance estimation
-- Web dashboard
-- Autonomous navigation
+- Per-object distance estimation
+- Flask web interface
+
+### Planned
+
+- Custom YOLO model for toy detection
+- Object management and tracking
+- Raspberry Pi to Arduino communication
+- Robot navigation
 - Robotic arm control
+- Toy sorting
 
 ---
 
@@ -44,23 +53,24 @@ The system is designed with a modular architecture that separates perception, de
 - OpenCV
 - Flask
 - NumPy
-- YOLO
+- Ultralytics YOLO
 
 ---
 
 ## System Architecture
 
 ```
-
                  OAK-D Camera
                        │
-        RGB + Depth + YOLO Inference
+          RGB Stream + Stereo Depth
                        │
                        ▼
                 Raspberry Pi 5
-          High-Level Decision Making
+        Object Detection (YOLO)
+        Distance Estimation
+        Decision Making
                        │
-                Serial Communication
+             Serial Communication
                        │
                        ▼
                  Arduino Uno
@@ -69,7 +79,6 @@ The system is designed with a modular architecture that separates perception, de
           ┌────────────┴────────────┐
           ▼                         ▼
      Drive Motors            Robotic Arm
-
 ```
 
 ---
@@ -77,44 +86,44 @@ The system is designed with a modular architecture that separates perception, de
 ## Project Structure
 
 ```
-
 RobotProject/
-
-robot_project/
-camera/
-web/
-
-models/
-
-main.py
-
-requirements.txt
-
-README.md
-
+│
+├── robot_project/
+│   ├── camera/
+│   ├── detection/
+│   └── web/
+│
+├── main.py
+├── requirements.txt
+└── README.md
 ```
 
 ---
 
 ## Current Status
 
-✅ Raspberry Pi configured
+### Completed
 
-✅ OAK-D RGB streaming
+- Raspberry Pi 5 configuration
+- OAK-D RGB streaming
+- Flask web interface
+- Stereo depth estimation
+- Depth map visualization
+- YOLO object detection
+- Per-object distance estimation
 
-✅ Flask web interface
+### In Progress
 
-🔄 Stereo depth implementation
+- Detection module refactoring
+- Object management system
 
-⬜ YOLO integration
+### Planned
 
-⬜ Custom toy dataset
-
-⬜ Training
-
-⬜ Autonomous navigation
-
-⬜ Robotic arm integration
+- Custom YOLO model training
+- Toy classification
+- Raspberry Pi to Arduino communication
+- Robot navigation
+- Robotic arm integration
 
 ---
 
@@ -126,17 +135,31 @@ Activate the virtual environment:
 source venv/bin/activate
 ```
 
-Run:
+Run the application:
 
 ```bash
 python main.py
 ```
 
-Open:
+Open the web interface:
 
 ```
 http://<RASPBERRY_PI_IP>:5000
 ```
+
+---
+
+## Future Development
+
+The next development stages include:
+
+1. Object management and tracking
+2. Custom YOLO model training for toy categories
+3. Decision-making module
+4. Raspberry Pi to Arduino communication
+5. Robot navigation
+6. Robotic arm control
+7. Complete toy sorting workflow
 
 ---
 

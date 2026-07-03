@@ -27,3 +27,8 @@ __pycache__/
 
 # Crash dumps
 *.tar.gz
+
+
+
+# YOLO model weights (important)
+*.pt

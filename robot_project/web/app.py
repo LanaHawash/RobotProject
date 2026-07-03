@@ -1,14 +1,16 @@
-from turtle import width
+
+
+
 
 from flask import Flask, Response
 import cv2
 
 from robot_project.camera.pipeline import CameraPipeline
 
-
+from robot_project.detection.detector import Detector
 
 camera = CameraPipeline()
-
+detector = Detector()
 camera.create_rgb()
 camera.create_depth()
 
@@ -25,23 +27,21 @@ def generate_frames():
     while camera.is_running():
 
         frame = camera.rgb_queue.get().getCvFrame()
+       
+        depth_frame = camera.depth_queue.get().getCvFrame()
+
+        results, frame = detector.detect(frame, depth_frame)
+
+      
         depth_frame = camera.depth_queue.get().getCvFrame()
         height, width = depth_frame.shape
 
         center_x = width // 2
         center_y = height // 2
 
-        distance = depth_frame[center_y, center_x]
-
-        cv2.putText(
-             frame,
-             f"Distance: {distance} mm",
-             (20, 40),
-             cv2.FONT_HERSHEY_SIMPLEX,
-             1,
-             (0, 255, 0),
-             2
-        )
+       
+        for d in results:
+            print(d)
         
         _, buffer = cv2.imencode(".jpg", frame)
 

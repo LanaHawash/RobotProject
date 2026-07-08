@@ -7,7 +7,7 @@ class ObjectDetector:
 
         print("Loading YOLO model...")
 
-        self.model = YOLO("yolov8n.pt")
+        self.model = YOLO("runs/detect/models/toy_detector-2/weights/best.pt")
 
         print("YOLO loaded successfully!")
 

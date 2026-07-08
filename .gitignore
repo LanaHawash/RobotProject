@@ -32,3 +32,8 @@ __pycache__/
 
 # YOLO model weights (important)
 *.pt
+
+dataset/
+toys.zip
+
+runs/

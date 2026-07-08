@@ -1,6 +1,6 @@
 
 
-
+from robot_project.web.capture import save_image, image_count
 from robot_project.world.manager import ObjectManager
 from flask import Flask, Response
 import cv2
@@ -21,14 +21,15 @@ import threading
 camera.start()
 
 app = Flask(__name__)
-
+latest_frame = None
 
 
 def generate_frames():
     while camera.is_running():
 
         frame = camera.rgb_queue.get().getCvFrame()
-       
+        global latest_frame
+        latest_frame = frame.copy()
         depth_frame = camera.depth_queue.get().getCvFrame()
 
         results, frame = detector.detect(frame, depth_frame)
@@ -61,6 +62,24 @@ def generate_frames():
             b"\r\n"
         )
 
+
+def generate_capture_frames():
+    global latest_frame
+
+    while camera.is_running():
+
+        frame = camera.rgb_queue.get().getCvFrame()
+
+        latest_frame = frame.copy()
+
+        _, buffer = cv2.imencode(".jpg", frame)
+
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n"
+            + buffer.tobytes()
+            + b"\r\n"
+        )
 
 @app.route("/")
 def index():
@@ -106,3 +125,90 @@ def depth():
             )
 
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+@app.route("/capture")
+def capture():
+
+    return f"""
+    <html>
+
+    <head>
+
+        <meta http-equiv="refresh" content="2">
+
+    </head>
+
+    <body>
+
+        <h2>Dataset Capture</h2>
+
+        <p>Images Saved: {image_count()}</p>
+
+        <img src="/capture_video" width="800">
+
+        <br><br>
+
+        <a href="/save">
+
+            <button style="font-size:24px;padding:15px;">
+
+                Save Image
+
+            </button>
+
+        </a>
+
+    </body>
+
+    </html>
+    """
+
+@app.route("/class/<name>")
+def choose_class(name):
+
+    set_class(name)
+
+    return f"""
+    <h2>Current class: {name}</h2>
+
+    <a href="/capture">
+        Back
+    </a>
+    """
+
+@app.route("/save")
+def save():
+
+    global latest_frame
+
+    if latest_frame is None:
+        return "No frame available."
+
+    filename = save_image(latest_frame)
+
+    return f"""
+    <html>
+
+    <head>
+
+    <meta http-equiv="refresh" content="0; url=/capture">
+
+    </head>
+
+    <body>
+
+    Saved {filename}
+
+    </body>
+
+    </html>
+    """
+
+
+@app.route("/capture_video")
+def capture_video():
+
+    return Response(
+        generate_capture_frames(),
+        mimetype="multipart/x-mixed-replace; boundary=frame"
+    )

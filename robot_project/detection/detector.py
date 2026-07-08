@@ -1,4 +1,3 @@
-from turtle import distance
 
 from robot_project.detection.yolo import ObjectDetector
 

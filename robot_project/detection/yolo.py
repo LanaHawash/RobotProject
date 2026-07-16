@@ -1,18 +1,28 @@
 from ultralytics import YOLO
 
+from robot_project.config import (
+    YOLO_CONFIDENCE_THRESHOLD,
+    YOLO_MODEL_PATH,
+)
+
 
 class ObjectDetector:
 
     def __init__(self):
+        if not YOLO_MODEL_PATH.exists():
+            raise FileNotFoundError(
+                f"YOLO model was not found: {YOLO_MODEL_PATH}"
+            )
 
-        print("Loading YOLO model...")
+        print(f"Loading YOLO model: {YOLO_MODEL_PATH}")
 
-        self.model = YOLO("runs/detect/models/toy_detector-2/weights/best.pt")
-
-        print("YOLO loaded successfully!")
+        self.model = YOLO(str(YOLO_MODEL_PATH))
 
     def detect(self, frame):
-
-        results = self.model(frame, verbose=False)
+        results = self.model.predict(
+            source=frame,
+            conf=YOLO_CONFIDENCE_THRESHOLD,
+            verbose=False,
+        )
 
         return results

@@ -27,3 +27,4 @@ types-PySide6==6.10.1.1
 urllib3==2.7.0
 Werkzeug==3.1.8
 xmltodict==1.0.4
+pyserial

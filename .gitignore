@@ -37,3 +37,44 @@ dataset/
 toys.zip
 
 runs/
+
+
+# Virtual environments
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Editors
+.vscode/
+
+# Environment and secrets
+.env
+.env.*
+
+# Backups
+backups/
+*.bak
+*.backup
+
+# Archives
+*.zip
+*.tar.gz
+
+# Logs and crashes
+*.log
+.cache/
+
+# Training outputs and datasets
+dataset/
+datasets/
+runs/
+toys.zip
+
+# Generated model formats
+*.pt
+*.onnx
+*.blob
+*.engine

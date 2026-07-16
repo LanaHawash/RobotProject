@@ -24,43 +24,52 @@ class ObjectManager:
 
     def get_all(self):
         return self.objects
-    
+
+    def get_objects_with_valid_depth(self):
+        return [
+            obj
+            for obj in self.objects
+            if obj.distance_mm is not None and obj.distance_mm > 0
+        ]
 
     def get_closest_object(self):
+        objects = self.get_objects_with_valid_depth()
 
-        if not self.objects:
+        if not objects:
             return None
 
-        return min(self.objects, key=lambda obj: obj.distance_mm)
-
+        return min(
+            objects,
+            key=lambda obj: obj.distance_mm,
+        )
 
     def get_objects_by_class(self, label):
-
         return [
             obj
             for obj in self.objects
             if obj.label == label
         ]
 
-
     def get_closest_object_by_class(self, label):
-
-        objects = self.get_objects_by_class(label)
+        objects = [
+            obj
+            for obj in self.get_objects_by_class(label)
+            if obj.distance_mm is not None and obj.distance_mm > 0
+        ]
 
         if not objects:
             return None
 
-        return min(objects, key=lambda obj: obj.distance_mm)
-
+        return min(
+            objects,
+            key=lambda obj: obj.distance_mm,
+        )
 
     def has_object(self, label):
-
         return any(
             obj.label == label
             for obj in self.objects
         )
 
-
     def get_object_count(self):
-
-        return len(self.objects)   
+        return len(self.objects)

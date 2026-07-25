@@ -39,7 +39,7 @@ class Detector:
 
     def detect(self, frame, depth_frame=None):
 
-        results = self.detector.detect(frame)
+        results = self.detector.track(frame)
 
         detections = []
 
@@ -47,8 +47,14 @@ class Detector:
             return detections, frame.copy()
 
         result = results[0]
+        boxes = result.boxes
 
-        for box in result.boxes:
+        if boxes.id is None:
+            track_ids = [None] * len(boxes)
+        else:
+            track_ids = boxes.id.int().cpu().tolist()
+
+        for box, track_id in zip(boxes, track_ids):
 
             x1, y1, x2, y2 = box.xyxy[0].tolist()
 
@@ -73,6 +79,7 @@ class Detector:
             )
 
             detections.append({
+                "track_id": track_id,
                 "class": label,
                 "confidence": confidence,
                 "distance_mm": distance_mm,

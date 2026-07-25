@@ -2,6 +2,13 @@ import threading
 import time
 
 import cv2
+
+from robot_project.hardware.arduino_controller import (
+    ArduinoController,
+)
+from robot_project.navigation.target_navigator import (
+    TargetNavigator,
+)
 from flask import Flask, Response
 
 from robot_project.camera.fps import FPS
@@ -19,11 +26,24 @@ detector = Detector()
 manager = ObjectManager()
 selector = ObjectSelector()
 fps_counter = FPS()
+arduino = ArduinoController()
+arduino_error = None
 
 camera.create_rgb()
 camera.create_depth()
 camera.start()
 
+try:
+    arduino.connect()
+
+    if not arduino.ping():
+        raise RuntimeError(
+            "Arduino did not respond to PING."
+        )
+
+except Exception as error:
+    arduino_error = str(error)
+    print(f"Arduino connection error: {error}")
 
 # Protect shared frames because the processing thread writes them
 # while Flask routes read them.
@@ -38,6 +58,7 @@ current_detection_count = 0
 current_valid_depth_count = 0
 
 current_closest_object = None
+current_navigation_target = None
 
 latest_candidate_status = {
     "label": None,
@@ -49,6 +70,25 @@ latest_candidate_status = {
 latest_selected_target = None
 
 processing_error = None
+def get_navigation_target():
+    """
+    Return the latest live target used by camera-guided navigation.
+
+    The navigation target is based on bounding-box occupancy rather
+    than OAK-D depth.
+    """
+
+    with frame_lock:
+        if current_navigation_target is None:
+            return None
+
+        return current_navigation_target.copy()
+
+
+navigator = TargetNavigator(
+    arduino=arduino,
+    get_target=get_navigation_target,
+)
 
 
 def create_depth_visualization(depth_frame):
@@ -130,6 +170,7 @@ def camera_processing_loop():
     global current_valid_depth_count
 
     global current_closest_object
+    global current_navigation_target
     global latest_candidate_status
     global latest_selected_target
 
@@ -158,6 +199,57 @@ def camera_processing_loop():
 
             selected_target = selector.update(detections)
             candidate_status = selector.get_candidate_status()
+
+            # Build a live navigation target using bounding-box size.
+            # Depth remains available for display/debugging, but it is
+            # no longer required by the navigation target returned here.
+            navigation_target_data = None
+
+            if detections:
+                live_target = max(
+                    detections,
+                    key=lambda detection: (
+                        detection["bounding_box"][2]
+                        - detection["bounding_box"][0]
+                    )
+                    * (
+                        detection["bounding_box"][3]
+                        - detection["bounding_box"][1]
+                    ),
+                )
+
+                x1, y1, x2, y2 = live_target["bounding_box"]
+
+                box_width = max(0, x2 - x1)
+                box_height = max(0, y2 - y1)
+                box_area = box_width * box_height
+
+                frame_height, frame_width = raw_frame.shape[:2]
+                frame_area = frame_width * frame_height
+
+                box_occupancy = (
+                    box_area / frame_area
+                    if frame_area > 0
+                    else 0.0
+                )
+
+                navigation_target_data = {
+                    "label": live_target["class"],
+                    "track_id": live_target.get("track_id"),
+                    "confidence": round(
+                        live_target["confidence"],
+                        3,
+                    ),
+                    "center_x": live_target["center"][0],
+                    "center_y": live_target["center"][1],
+                    "box_width": box_width,
+                    "box_height": box_height,
+                    "box_area": box_area,
+                    "box_occupancy": round(
+                        box_occupancy,
+                        4,
+                    ),
+                }
 
             if selected_target is None:
                 selected_target_data = None
@@ -237,6 +329,11 @@ def camera_processing_loop():
                 current_valid_depth_count = valid_depth_count
 
                 current_closest_object = closest_data
+                current_navigation_target = (
+                    navigation_target_data.copy()
+                    if navigation_target_data is not None
+                    else None
+                )
                 latest_candidate_status = candidate_status.copy()
                 latest_selected_target = selected_target_data
 
@@ -321,6 +418,38 @@ def index():
 
             <img src="/video" width="640">
 
+            <br><br>
+
+            <a href="/navigation/start">
+                <button
+                    style="
+                        font-size:22px;
+                        padding:14px;
+                        background:#4CAF50;
+                    "
+                >
+                    Start Target Approach
+                </button>
+            </a>
+
+            <a href="/navigation/stop">
+                <button
+                    style="
+                        font-size:22px;
+                        padding:14px;
+                        background:#f44336;
+                    "
+                >
+                    Emergency Stop
+                </button>
+            </a>
+
+            <p>
+                <a href="/navigation/status">
+                    Open navigation status
+                </a>
+            </p>
+
             <p>
                 <a href="/depth">Open depth stream</a>
             </p>
@@ -334,7 +463,7 @@ def index():
             </p>
         </body>
     </html>
-    """
+    """  
 
 
 @app.route("/video")
@@ -440,6 +569,12 @@ def status():
             else None
         )
 
+        navigation_target = (
+            current_navigation_target.copy()
+            if current_navigation_target is not None
+            else None
+        )
+
         error = processing_error
 
     return {
@@ -451,9 +586,84 @@ def status():
         "candidate": candidate_status,
         "selected_target": selected_target,
         "target_confirmed": selected_target is not None,
+        "navigation_target": navigation_target,
+        "arduino_connected": arduino.is_connected(),
+        "arduino_error": arduino_error,
+        "navigation": {
+            "running": navigator.is_running(),
+            "status": navigator.status,
+            "last_action": navigator.last_action,
+            "error": navigator.error,
+        },
         "processing_error": error,
     }
 
+@app.route("/navigation/start")
+def start_navigation():
+    if not arduino.is_connected():
+        return {
+            "started": False,
+            "error": (
+                arduino_error
+                or "Arduino is not connected."
+            ),
+        }, 503
+
+    with frame_lock:
+        target_available = (
+            current_navigation_target is not None
+        )
+
+    if not target_available:
+        return {
+            "started": False,
+            "error": (
+                "No confirmed target is available."
+            ),
+        }, 409
+
+    navigator.start()
+
+    return {
+        "started": True,
+        "navigation_status": navigator.status,
+    }
+
+
+@app.route("/navigation/stop")
+def stop_navigation():
+    navigator.stop()
+
+    return {
+        "stopped": True,
+        "navigation_status": navigator.status,
+    }
+
+
+@app.route("/navigation/status")
+def navigation_status():
+    with frame_lock:
+        navigation_target = (
+            current_navigation_target.copy()
+            if current_navigation_target is not None
+            else None
+        )
+
+    return {
+        "running": navigator.is_running(),
+        "status": navigator.status,
+        "last_action": navigator.last_action,
+        "error": navigator.error,
+        "arduino_connected": arduino.is_connected(),
+        "arduino_error": arduino_error,
+        "navigation_target": navigation_target,
+        "pickup_distance_cm": navigator.pickup_distance_cm,
+        "pickup_pulses": navigator.pickup_pulses,
+        "movement_history": navigator.movement_history(),
+        "simplified_history": navigator.simplified_history(),
+        "return_route": navigator.return_route(),
+        
+    }
 
 processing_thread = threading.Thread(
     target=camera_processing_loop,

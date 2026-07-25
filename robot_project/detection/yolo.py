@@ -1,9 +1,6 @@
 from ultralytics import YOLO
 
-from robot_project.config import (
-    YOLO_CONFIDENCE_THRESHOLD,
-    YOLO_MODEL_PATH,
-)
+from robot_project.config import YOLO_MODEL_PATH
 
 
 class ObjectDetector:
@@ -18,10 +15,17 @@ class ObjectDetector:
 
         self.model = YOLO(str(YOLO_MODEL_PATH))
 
-    def detect(self, frame):
-        results = self.model.predict(
+    def track(self, frame):
+        """
+        Detect objects and preserve their identities between frames
+        using the ByteTrack tracker.
+        """
+
+        results = self.model.track(
             source=frame,
-            conf=YOLO_CONFIDENCE_THRESHOLD,
+            conf=0.20,
+            tracker="config/trackers/bytetrack_robot.yaml",
+            persist=True,
             verbose=False,
         )
 

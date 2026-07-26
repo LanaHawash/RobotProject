@@ -1,3 +1,4 @@
+import math
 import threading
 import time
 from typing import Callable, Optional
@@ -43,6 +44,14 @@ class TargetNavigator:
     MIN_VALID_OCCUPANCY = 0.001
     MAX_VALID_OCCUPANCY = 0.80
 
+    # Return-home dead reckoning.
+    # PLACEHOLDER - measure this on your robot before relying on
+    # it: drive FORWARD for a fixed duration a few times, measure
+    # the distance traveled, and set this to cm-traveled / ms-run.
+    CM_PER_MS = 0.05
+    MAX_FORWARD_CHUNK_MS = 5000
+    MIN_EXECUTABLE_TURN_DEGREES = 1.0
+
     def __init__(
         self,
         arduino: ArduinoController,
@@ -69,6 +78,8 @@ class TargetNavigator:
         self.ultrasonic_search_pulses = 0
         self.last_ultrasonic_distance_cm = None
 
+        self.last_pose = None
+
     def start(self) -> None:
         if self.is_running():
             return
@@ -86,6 +97,8 @@ class TargetNavigator:
         self.centered_updates = 0
         self.ultrasonic_search_pulses = 0
         self.last_ultrasonic_distance_cm = None
+
+        self.last_pose = None
 
         self.navigation_thread = threading.Thread(
             target=self._navigation_loop,
@@ -111,6 +124,20 @@ class TargetNavigator:
             self.navigation_thread is not None
             and self.navigation_thread.is_alive()
         )
+
+    def is_returning(self) -> bool:
+        """
+        True while the robot is anywhere in the post-pickup
+        sequence (grabbing, driving home, or turning to face the
+        bins). Used to stop a new navigation run from starting on
+        top of an in-progress return.
+        """
+        return self.status in {
+            "GRABBING_OBJECT",
+            "RETURNING_HOME",
+            "HOME_REACHED",
+            "FACING_BINS",
+        }
 
     def movement_history(self) -> list[dict]:
         return self.history.snapshot()
@@ -318,6 +345,11 @@ class TargetNavigator:
                     self._complete_pickup_positioning(
                         result
                     )
+
+                    self._grab_object()
+                    self._return_to_start()
+                    self._face_bins()
+
                     break
 
                 forward_duration = (
@@ -517,3 +549,159 @@ class TargetNavigator:
             "Generated return route: "
             f"{self.history.inverse_route()}"
         )
+
+    def _grab_object(self) -> None:
+        """
+        Placeholder for the robotic arm pickup. This is the exact
+        point where the arm call will go once it exists - for now
+        it just marks status and assumes the object is held.
+        """
+        self.status = "GRABBING_OBJECT"
+        self.last_action = "GRAB_OBJECT_PLACEHOLDER"
+
+        print(
+            "Arm grab not implemented yet. "
+            "Assuming the object is now held."
+        )
+
+    def _return_to_start(self) -> None:
+        """
+        Turn once toward the estimated starting point and drive
+        straight there, using the pose estimated from the outbound
+        history. This does not replay any recorded commands.
+        """
+        self.status = "RETURNING_HOME"
+
+        pose = self.history.estimate_pose(
+            self.CM_PER_MS
+        )
+        self.last_pose = pose
+
+        distance_home_cm = math.hypot(
+            pose["x"], pose["y"]
+        )
+        bearing_home = math.degrees(
+            math.atan2(-pose["x"], -pose["y"])
+        )
+        turn_needed = self._normalize_angle(
+            bearing_home - pose["heading_degrees"]
+        )
+
+        self.last_action = (
+            "RETURN_HOME_PLAN "
+            f"DISTANCE_CM={distance_home_cm:.1f} "
+            f"TURN_DEGREES={turn_needed:.1f}"
+        )
+
+        print(
+            "Return-home plan: "
+            f"distance={distance_home_cm:.1f} cm, "
+            f"turn={turn_needed:.1f} degrees "
+            f"(estimated pose: {pose})"
+        )
+
+        self._execute_turn(turn_needed)
+        self._drive_distance_cm(distance_home_cm)
+
+        self.status = "HOME_REACHED"
+        self.last_action = "HOME_REACHED"
+
+    def _face_bins(self) -> None:
+        """
+        Turn to face the bins behind the starting point, using the
+        heading estimated after the return drive - not a fixed
+        180-degree turn.
+        """
+        self.status = "FACING_BINS"
+
+        pose = self.history.estimate_pose(
+            self.CM_PER_MS
+        )
+        self.last_pose = pose
+
+        turn_to_bins = self._normalize_angle(
+            180 - pose["heading_degrees"]
+        )
+
+        self.last_action = (
+            f"FACE_BINS TURN_DEGREES={turn_to_bins:.1f}"
+        )
+
+        self._execute_turn(turn_to_bins)
+
+        self.status = "READY_TO_SORT"
+        self.last_action = "READY_TO_SORT"
+
+        print(
+            f"Facing bins after turning "
+            f"{turn_to_bins:.1f} degrees."
+        )
+
+    def _execute_turn(
+        self,
+        angle_degrees: float,
+    ) -> None:
+        if (
+            abs(angle_degrees)
+            < self.MIN_EXECUTABLE_TURN_DEGREES
+        ):
+            return
+
+        angle = min(abs(angle_degrees), 180.0)
+
+        if angle_degrees > 0:
+            actual_angle = (
+                self.arduino.turn_right(angle)
+            )
+            self.history.record_turn(
+                command="TURN_RIGHT",
+                angle=actual_angle,
+            )
+        else:
+            actual_angle = (
+                self.arduino.turn_left(angle)
+            )
+            self.history.record_turn(
+                command="TURN_LEFT",
+                angle=actual_angle,
+            )
+
+    def _drive_distance_cm(
+        self,
+        distance_cm: float,
+    ) -> None:
+        if distance_cm <= 0:
+            return
+
+        remaining_ms = int(
+            distance_cm / self.CM_PER_MS
+        )
+
+        while remaining_ms > 0:
+            chunk_ms = min(
+                remaining_ms,
+                self.MAX_FORWARD_CHUNK_MS,
+            )
+
+            actual_duration = self.arduino.forward(
+                chunk_ms
+            )
+
+            self.history.record_linear(
+                command="FORWARD",
+                duration_ms=actual_duration,
+                source="RETURN_HOME",
+            )
+
+            remaining_ms -= chunk_ms
+
+    @staticmethod
+    def _normalize_angle(
+        angle_degrees: float,
+    ) -> float:
+        angle = angle_degrees % 360.0
+
+        if angle > 180.0:
+            angle -= 360.0
+
+        return angle

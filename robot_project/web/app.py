@@ -591,6 +591,7 @@ def status():
         "arduino_error": arduino_error,
         "navigation": {
             "running": navigator.is_running(),
+            "returning": navigator.is_returning(),
             "status": navigator.status,
             "last_action": navigator.last_action,
             "error": navigator.error,
@@ -622,6 +623,12 @@ def start_navigation():
             ),
         }, 409
 
+    if navigator.is_returning():
+        return {
+            "started": False,
+            "error": "The robot is currently returning.",
+        }, 409
+
     navigator.start()
 
     return {
@@ -640,6 +647,40 @@ def stop_navigation():
     }
 
 
+@app.route("/navigation/return")
+def return_to_start():
+    if not arduino.is_connected():
+        return {
+            "started": False,
+            "error": (
+                arduino_error
+                or "Arduino is not connected."
+            ),
+        }, 503
+
+    if navigator.is_running():
+        return {
+            "started": False,
+            "error": (
+                "Target navigation is still running."
+            ),
+        }, 409
+
+    try:
+        navigator.start_return()
+    except RuntimeError as error:
+        return {
+            "started": False,
+            "error": str(error),
+        }, 409
+
+    return {
+        "started": True,
+        "navigation_status": navigator.status,
+        "return_route": navigator.return_route(),
+    }
+
+
 @app.route("/navigation/status")
 def navigation_status():
     with frame_lock:
@@ -651,6 +692,7 @@ def navigation_status():
 
     return {
         "running": navigator.is_running(),
+        "returning": navigator.is_returning(),
         "status": navigator.status,
         "last_action": navigator.last_action,
         "error": navigator.error,

@@ -1,3 +1,4 @@
+import math
 import threading
 from typing import Iterable
 
@@ -208,3 +209,64 @@ class MovementHistory:
                 )
 
         return return_route
+
+    def estimate_pose(
+        self,
+        cm_per_ms: float,
+    ) -> dict:
+        """
+        Dead-reckoning pose estimate relative to the starting
+        point, built from the same simplified() history used
+        elsewhere. This does NOT replay or reverse any commands -
+        it only integrates them into a position/heading estimate.
+
+        Heading comes from the gyro-reported turn angles recorded
+        by record_turn() (accurate, closed-loop on the Arduino
+        side). Distance comes from duration_ms * cm_per_ms (an
+        open-loop estimate, since there are no wheel encoders).
+
+        Coordinate frame:
+            - Start pose is (0, 0), heading 0.
+            - heading is in degrees, increasing with TURN_RIGHT
+              and decreasing with TURN_LEFT.
+            - "forward" at heading 0 is +y; heading rotates
+              toward +x as it increases (matches TURN_RIGHT).
+
+        Returns:
+            {"x": float, "y": float, "heading_degrees": float}
+            x/y are in the same distance unit as cm_per_ms
+            produces (centimeters, if cm_per_ms is cm/ms).
+        """
+        x = 0.0
+        y = 0.0
+        heading = 0.0
+
+        for movement in self.simplified():
+            command = movement["command"]
+
+            if command in ("FORWARD", "BACKWARD"):
+                distance = (
+                    movement["duration_ms"] * cm_per_ms
+                )
+
+                if command == "BACKWARD":
+                    distance = -distance
+
+                x += distance * math.sin(
+                    math.radians(heading)
+                )
+                y += distance * math.cos(
+                    math.radians(heading)
+                )
+
+            elif command == "TURN_RIGHT":
+                heading += movement["angle"]
+
+            elif command == "TURN_LEFT":
+                heading -= movement["angle"]
+
+        return {
+            "x": x,
+            "y": y,
+            "heading_degrees": heading,
+        }

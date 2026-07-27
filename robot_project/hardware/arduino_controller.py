@@ -365,15 +365,35 @@ class ArduinoController:
                     if line.startswith(
                         "COMMAND_ABORTED,"
                     ):
-                        raise RuntimeError(line)
+                        reason = "UNKNOWN"
+
+                        match = re.search(
+                            r"REASON=([^,]+)",
+                            line,
+                        )
+
+                        if match is not None:
+                            reason = match.group(1)
+
+                        return {
+                            "success": False,
+                            "reason": reason,
+                            "distance_cm":
+                                final_distance_cm,
+                            "pulses": pulses,
+                        }
 
                     if line.startswith("ERROR,"):
                         raise RuntimeError(line)
 
-                    # STOPPED may arrive before the Arduino's
-                    # COMMAND_ABORTED response. Keep reading.
                     if line == "STOPPED":
-                        continue
+                        return {
+                            "success": False,
+                            "reason": "STOP",
+                            "distance_cm":
+                                final_distance_cm,
+                            "pulses": pulses,
+                        }
 
                 raise TimeoutError(
                     "Timed out waiting for pickup "

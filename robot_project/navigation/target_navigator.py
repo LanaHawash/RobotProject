@@ -106,6 +106,54 @@ class TargetNavigator:
         )
         self.navigation_thread.start()
 
+    def start_return(self) -> None:
+        """
+        Start the existing return-home calculation manually.
+
+        This reuses _return_to_start() and _face_bins() without
+        changing their calculations.
+        """
+        if self.is_running():
+            raise RuntimeError(
+                "Navigation is already running."
+            )
+
+        if not self.history.snapshot():
+            raise RuntimeError(
+                "No movement history is available."
+            )
+
+        self.stop_event.clear()
+        self.error = None
+        self.status = "RETURNING_HOME"
+
+        self.navigation_thread = threading.Thread(
+            target=self._manual_return_loop,
+            daemon=True,
+        )
+        self.navigation_thread.start()
+
+    def _manual_return_loop(self) -> None:
+        try:
+            self._return_to_start()
+            self._face_bins()
+        except Exception as error:
+            if self.stop_event.is_set():
+                self.status = "STOPPED"
+                self.last_action = "STOP"
+            else:
+                self.error = str(error)
+                self.status = "ERROR"
+                print(f"Manual return error: {error}")
+        finally:
+            try:
+                self.arduino.stop()
+            except Exception as error:
+                print(
+                    "Final manual-return STOP warning: "
+                    f"{error}"
+                )
+
     def stop(self) -> None:
         self.stop_event.set()
 
@@ -341,6 +389,44 @@ class TargetNavigator:
                         self.arduino
                         .position_for_pickup()
                     )
+
+                    if not result["success"]:
+                        if self.stop_event.is_set():
+                            self.status = "STOPPED"
+                            self.last_action = "STOP"
+                            break
+
+                        self.history.extend_pulses(
+                            result["pulses"]
+                        )
+
+                        reason = result.get(
+                            "reason",
+                            "UNKNOWN",
+                        )
+
+                        self.status = (
+                            "PICKUP_POSITIONING_RETRY"
+                        )
+                        self.last_action = (
+                            "RETURN_TO_CAMERA_CONTROL "
+                            f"REASON={reason}"
+                        )
+
+                        print(
+                            "Pickup positioning was "
+                            "not completed. Returning "
+                            "control to the camera: "
+                            f"{reason}"
+                        )
+
+                        self.centered_updates = 0
+                        robot_already_stopped = True
+
+                        time.sleep(
+                            self.TARGET_UPDATE_DELAY_SECONDS
+                        )
+                        continue
 
                     self._complete_pickup_positioning(
                         result

@@ -69,7 +69,7 @@ const uint8_t REQUIRED_STABLE_READINGS = 5;
 const uint8_t MAX_INVALID_READINGS = 5;
 
 const unsigned long PICKUP_TIMEOUT_MS = 10000;
-const unsigned long PULSE_SETTLE_MS = 80;
+const unsigned long PULSE_SETTLE_MS = 100;
 
 const float MAX_PICKUP_START_DISTANCE_CM = 40.0;
 const uint8_t REQUIRED_INITIAL_READINGS = 3;
@@ -77,7 +77,7 @@ const float MAX_INITIAL_READING_SPREAD_CM = 4.0;
 
 const float MAX_TRACKING_DISTANCE_CM = 35.0;
 const float MAX_DISTANCE_JUMP_CM = 8.0;
-const uint8_t MAX_TRACKING_FAILURES = 1;
+const uint8_t MAX_TRACKING_FAILURES = 5;
 
 // ==================================================
 // MPU6050
@@ -373,8 +373,8 @@ bool confirmPickupTarget()
 
       Serial.println(
         F(
-          "ERROR,"
-          "ULTRASONIC_TARGET_NOT_CONFIRMED"
+          "COMMAND_ABORTED,POSITION_FOR_PICKUP,"
+          "REASON=ULTRASONIC_TARGET_NOT_CONFIRMED"
         )
       );
 
@@ -424,8 +424,8 @@ bool confirmPickupTarget()
 
     Serial.println(
       F(
-        "ERROR,"
-        "ULTRASONIC_READING_UNSTABLE"
+        "COMMAND_ABORTED,POSITION_FOR_PICKUP,"
+        "REASON=ULTRASONIC_READING_UNSTABLE"
       )
     );
 
@@ -470,8 +470,8 @@ void positionForPickup()
 
     Serial.println(
       F(
-        "ERROR,"
-        "ULTRASONIC_TARGET_LOST"
+        "COMMAND_ABORTED,POSITION_FOR_PICKUP,"
+        "REASON=ULTRASONIC_TARGET_LOST"
       )
     );
 
@@ -514,7 +514,10 @@ void positionForPickup()
       )
       {
         Serial.println(
-          F("ERROR,ULTRASONIC_NO_READING")
+          F(
+            "COMMAND_ABORTED,POSITION_FOR_PICKUP,"
+            "REASON=ULTRASONIC_NO_READING"
+          )
         );
         return;
       }
@@ -573,8 +576,8 @@ void positionForPickup()
       {
         Serial.println(
           F(
-            "ERROR,"
-            "ULTRASONIC_TARGET_LOST"
+            "COMMAND_ABORTED,POSITION_FOR_PICKUP,"
+            "REASON=ULTRASONIC_TARGET_LOST"
           )
         );
 
@@ -707,7 +710,10 @@ void positionForPickup()
 
   stopMotors();
   Serial.println(
-    F("ERROR,PICKUP_POSITION_TIMEOUT")
+    F(
+      "COMMAND_ABORTED,POSITION_FOR_PICKUP,"
+      "REASON=PICKUP_POSITION_TIMEOUT"
+    )
   );
 }
 

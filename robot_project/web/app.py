@@ -405,6 +405,9 @@ def generate_stream(frame_type):
         time.sleep(0.01)
 
 
+
+
+
 @app.route("/")
 def index():
     return """

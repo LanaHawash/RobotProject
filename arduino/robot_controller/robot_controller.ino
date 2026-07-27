@@ -1,7 +1,10 @@
 #include <Wire.h>
 #include <I2Cdev.h>
 #include <MPU6050.h>
+#include <Adafruit_PWMServoDriver.h>
 
+Adafruit_PWMServoDriver pwm =
+    Adafruit_PWMServoDriver();
 // ==================================================
 // L298N CONNECTIONS
 // ==================================================
@@ -36,7 +39,7 @@ const unsigned long TURN_START_BOOST_MS = 100;
 const float SLOW_TURN_ZONE_DEGREES = 7.0;
 
 const unsigned long MAX_DRIVE_TIME_MS = 5000;
-const unsigned long TURN_TIMEOUT_MS = 6000;
+const unsigned long TURN_TIMEOUT_MS = 10000;
 
 const float MIN_TURN_ANGLE = 1.0;
 const float MAX_TURN_ANGLE = 180.0;
@@ -51,12 +54,12 @@ const unsigned long TURN_STALL_TIMEOUT_MS = 350;
 // PICKUP POSITIONING SETTINGS
 // ==================================================
 
-const float PICKUP_TARGET_CM = 15.0;
+const float PICKUP_TARGET_CM = 7.0;
 const float PICKUP_TOLERANCE_CM = 1.0;
 
 const float MIN_VALID_DISTANCE_CM = 2.0;
 const float MAX_VALID_DISTANCE_CM = 200.0;
-const float EMERGENCY_MIN_DISTANCE_CM = 5.0;
+const float EMERGENCY_MIN_DISTANCE_CM = 4.0;
 
 const unsigned long FAR_FORWARD_PULSE_MS = 60;
 const unsigned long NEAR_FORWARD_PULSE_MS = 25;
@@ -68,16 +71,63 @@ const float LARGE_POSITION_ERROR_CM = 4.0;
 const uint8_t REQUIRED_STABLE_READINGS = 5;
 const uint8_t MAX_INVALID_READINGS = 5;
 
-const unsigned long PICKUP_TIMEOUT_MS = 10000;
+const unsigned long PICKUP_TIMEOUT_MS = 20000;
 const unsigned long PULSE_SETTLE_MS = 100;
 
-const float MAX_PICKUP_START_DISTANCE_CM = 40.0;
+const float MAX_PICKUP_START_DISTANCE_CM = 16.0;
 const uint8_t REQUIRED_INITIAL_READINGS = 3;
 const float MAX_INITIAL_READING_SPREAD_CM = 4.0;
 
 const float MAX_TRACKING_DISTANCE_CM = 35.0;
-const float MAX_DISTANCE_JUMP_CM = 8.0;
-const uint8_t MAX_TRACKING_FAILURES = 5;
+const float MAX_DISTANCE_JUMP_CM = 5.0;
+const uint8_t MAX_TRACKING_FAILURES = 10;
+
+// PCA9685 calibrated pulse range
+#define SERVO_MIN 75
+#define SERVO_MAX 550
+
+// PCA9685 channels
+const uint8_t BASE_CHANNEL = 0;
+const uint8_t SHOULDER_CHANNEL = 4;
+const uint8_t ELBOW_CHANNEL = 8;
+const uint8_t GRIPPER_CHANNEL = 12;
+
+// Safe mechanical limits
+const int BASE_MIN_ANGLE = 0;
+const int BASE_MAX_ANGLE = 180;
+
+const int SHOULDER_MIN_ANGLE = 0;
+const int SHOULDER_MAX_ANGLE = 180;
+
+const int ELBOW_MIN_ANGLE = 10;
+const int ELBOW_MAX_ANGLE = 130;
+
+const int GRIPPER_MIN_ANGLE = 95;
+const int GRIPPER_MAX_ANGLE = 170;
+
+// Starting pose
+const int START_BASE_ANGLE = 100;
+const int START_SHOULDER_ANGLE = 140;
+const int START_ELBOW_ANGLE = 30;
+const int START_GRIPPER_ANGLE = 160;
+
+// Catching pose
+const int CATCH_BASE_ANGLE = 50;
+const int CATCH_SHOULDER_ANGLE = 140;
+const int CATCH_ELBOW_ANGLE = 30;
+const int CATCH_GRIPPER_ANGLE = 100;
+
+// Lifting/carrying pose
+const int LIFT_BASE_ANGLE = 100;
+const int LIFT_SHOULDER_ANGLE = 140;
+const int LIFT_ELBOW_ANGLE = 30;
+const int LIFT_GRIPPER_ANGLE = 100;
+
+// Release pose
+const int RELEASE_BASE_ANGLE = 100;
+const int RELEASE_SHOULDER_ANGLE = 140;
+const int RELEASE_ELBOW_ANGLE = 30;
+const int RELEASE_GRIPPER_ANGLE = 160;
 
 // ==================================================
 // MPU6050
@@ -89,6 +139,7 @@ int16_t ax, ay, az;
 int16_t gx, gy, gz;
 
 float gyroZBias = 0.0;
+
 
 // ==================================================
 // MOTOR FUNCTIONS
@@ -174,6 +225,183 @@ void setLeftTurnDirection()
   digitalWrite(IN4, LOW);
 }
 
+//===================================================
+//Servo Function
+//===================================================
+int constrainServoAngle(
+    uint8_t channel,
+    int angle
+)
+{
+  if (channel == BASE_CHANNEL)
+  {
+    return constrain(
+        angle,
+        BASE_MIN_ANGLE,
+        BASE_MAX_ANGLE
+    );
+  }
+
+  if (channel == SHOULDER_CHANNEL)
+  {
+    return constrain(
+        angle,
+        SHOULDER_MIN_ANGLE,
+        SHOULDER_MAX_ANGLE
+    );
+  }
+
+  if (channel == ELBOW_CHANNEL)
+  {
+    return constrain(
+        angle,
+        ELBOW_MIN_ANGLE,
+        ELBOW_MAX_ANGLE
+    );
+  }
+
+  if (channel == GRIPPER_CHANNEL)
+  {
+    return constrain(
+        angle,
+        GRIPPER_MIN_ANGLE,
+        GRIPPER_MAX_ANGLE
+    );
+  }
+
+  return -1;
+}
+
+
+void setServoAngle(
+    uint8_t channel,
+    int angle
+)
+{
+  angle = constrainServoAngle(
+      channel,
+      angle
+  );
+
+  if (angle < 0)
+  {
+    return;
+  }
+
+  int pulse = map(
+      angle,
+      0,
+      180,
+      SERVO_MIN,
+      SERVO_MAX
+  );
+
+  pwm.setPWM(
+      channel,
+      0,
+      pulse
+  );
+}
+
+
+void moveArmToStart()
+{
+  setServoAngle(
+      SHOULDER_CHANNEL,
+      START_SHOULDER_ANGLE
+  );
+
+  setServoAngle(
+      ELBOW_CHANNEL,
+      START_ELBOW_ANGLE
+  );
+
+  setServoAngle(
+      BASE_CHANNEL,
+      START_BASE_ANGLE
+  );
+
+  setServoAngle(
+      GRIPPER_CHANNEL,
+      START_GRIPPER_ANGLE
+  );
+}
+
+
+void grabObject()
+{
+  stopMotors();
+
+  Serial.println(
+      "COMMAND_STARTED,GRAB_OBJECT"
+  );
+
+  // Confirm the arm begins with the gripper open.
+  setServoAngle(
+      GRIPPER_CHANNEL,
+      START_GRIPPER_ANGLE
+  );
+
+  delay(500);
+
+  // Reach toward the object.
+  setServoAngle(
+      BASE_CHANNEL,
+      CATCH_BASE_ANGLE
+  );
+
+  delay(1500);
+
+  // Close the gripper.
+  setServoAngle(
+      GRIPPER_CHANNEL,
+      CATCH_GRIPPER_ANGLE
+  );
+
+  delay(1500);
+
+  // Lift the object while keeping it held.
+  setServoAngle(
+      BASE_CHANNEL,
+      LIFT_BASE_ANGLE
+  );
+
+  delay(1500);
+
+  Serial.println(
+      "COMMAND_DONE,GRAB_OBJECT"
+  );
+}
+
+
+void releaseObject()
+{
+  stopMotors();
+
+  Serial.println(
+      "COMMAND_STARTED,RELEASE_OBJECT"
+  );
+
+  // Ensure the arm is in the carrying position.
+  setServoAngle(
+      BASE_CHANNEL,
+      RELEASE_BASE_ANGLE
+  );
+
+  delay(700);
+
+  // Open the gripper over the bin.
+  setServoAngle(
+      GRIPPER_CHANNEL,
+      RELEASE_GRIPPER_ANGLE
+  );
+
+  delay(1500);
+
+  Serial.println(
+      "COMMAND_DONE,RELEASE_OBJECT"
+  );
+}
 // ==================================================
 // ULTRASONIC FUNCTIONS
 // ==================================================
@@ -534,8 +762,8 @@ void positionForPickup()
     Serial.println(distanceCM, 1);
 
     bool distanceTooFar =
-        distanceCM >
-        MAX_TRACKING_DISTANCE_CM;
+    distanceCM >
+    MAX_TRACKING_DISTANCE_CM;
 
     bool distanceJumped =
         abs(
@@ -544,9 +772,14 @@ void positionForPickup()
         ) >
         MAX_DISTANCE_JUMP_CM;
 
+    bool suspiciousIncrease =
+        distanceCM >
+        lastTrustedDistanceCM + 3.0;
+
     if (
       distanceTooFar ||
-      distanceJumped
+      distanceJumped ||
+      suspiciousIncrease
     )
     {
       stopMotors();
@@ -561,13 +794,8 @@ void positionForPickup()
       );
       Serial.print(distanceCM, 1);
 
-      Serial.print(
-        F(",LAST_TRUSTED_CM=")
-      );
-      Serial.println(
-        lastTrustedDistanceCM,
-        1
-      );
+      Serial.print(F(",LAST_TRUSTED_CM="));
+      Serial.println(lastTrustedDistanceCM, 1);
 
       if (
         trackingFailureCount >=
@@ -1196,6 +1424,18 @@ void processCommand(String command)
     return;
   }
 
+  if (command == "GRAB_OBJECT")
+  {
+    grabObject();
+    return;
+  }
+
+  if (command == "RELEASE_OBJECT")
+  {
+    releaseObject();
+    return;
+  }
+
   Serial.print(F("ERROR,UNKNOWN_COMMAND,"));
   Serial.println(command);
 }
@@ -1236,6 +1476,16 @@ void setup()
   printImuReadings();
 
   calibrateGyro();
+  pwm.begin();
+  pwm.setPWMFreq(50);
+
+  delay(500);
+
+  moveArmToStart();
+
+  delay(1000);
+
+  Serial.println("ARM_READY");
 
   Serial.println(F("ARDUINO_READY"));
 }

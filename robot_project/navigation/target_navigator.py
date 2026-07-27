@@ -18,7 +18,7 @@ class TargetNavigator:
     SMALL_TURN_DEGREES = 3
     LARGE_TURN_DEGREES = 6
 
-    TARGET_UPDATE_DELAY_SECONDS = 0.6
+    TARGET_UPDATE_DELAY_SECONDS = 0.35
     MAX_LOST_TARGET_UPDATES = 8
 
     # The selected target must remain centered for two consecutive
@@ -33,13 +33,13 @@ class TargetNavigator:
     # Ultrasonic-controlled normal approach.
     FAR_DISTANCE_CM = 50.0
     MEDIUM_DISTANCE_CM = 30.0
-    PICKUP_POSITIONING_START_CM = 20.0
-    EMERGENCY_DISTANCE_CM = 6.0
+    PICKUP_POSITIONING_START_CM = 15.0
+    EMERGENCY_DISTANCE_CM = 4.0
     MAX_PLAUSIBLE_APPROACH_DISTANCE_CM = 100.0
 
-    FAR_FORWARD_MS = 300
-    MEDIUM_FORWARD_MS = 150
-    CLOSE_FORWARD_MS = 80
+    FAR_FORWARD_MS = 500
+    MEDIUM_FORWARD_MS = 250
+    CLOSE_FORWARD_MS = 100
 
     MIN_VALID_OCCUPANCY = 0.001
     MAX_VALID_OCCUPANCY = 0.80
@@ -48,9 +48,10 @@ class TargetNavigator:
     # PLACEHOLDER - measure this on your robot before relying on
     # it: drive FORWARD for a fixed duration a few times, measure
     # the distance traveled, and set this to cm-traveled / ms-run.
-    CM_PER_MS = 0.05
+    CM_PER_MS = 0.055
     MAX_FORWARD_CHUNK_MS = 5000
     MIN_EXECUTABLE_TURN_DEGREES = 1.0
+    RETURN_DURATION_SCALE = 0.4
 
     def __init__(
         self,
@@ -182,9 +183,12 @@ class TargetNavigator:
         """
         return self.status in {
             "GRABBING_OBJECT",
+            "OBJECT_HELD",
             "RETURNING_HOME",
             "HOME_REACHED",
             "FACING_BINS",
+            "READY_TO_SORT",
+            "RELEASING_OBJECT",
         }
 
     def movement_history(self) -> list[dict]:
@@ -435,6 +439,7 @@ class TargetNavigator:
                     self._grab_object()
                     self._return_to_start()
                     self._face_bins()
+                    self._release_object()
 
                     break
 
@@ -638,17 +643,39 @@ class TargetNavigator:
 
     def _grab_object(self) -> None:
         """
-        Placeholder for the robotic arm pickup. This is the exact
-        point where the arm call will go once it exists - for now
-        it just marks status and assumes the object is held.
+        Ask the Arduino to perform the calibrated pickup sequence.
+
+        The robot has already completed ultrasonic positioning before
+        this method is called.
         """
         self.status = "GRABBING_OBJECT"
-        self.last_action = "GRAB_OBJECT_PLACEHOLDER"
+        self.last_action = "GRAB_OBJECT"
 
-        print(
-            "Arm grab not implemented yet. "
-            "Assuming the object is now held."
-        )
+        print("Starting robotic arm pickup.")
+
+        self.arduino.grab_object()
+
+        self.status = "OBJECT_HELD"
+        self.last_action = "OBJECT_HELD"
+
+        print("Robotic arm pickup completed.")
+
+    def _release_object(self) -> None:
+        """
+        Ask the Arduino to release the held object after the robot
+        has returned home and completed the existing bin-facing turn.
+        """
+        self.status = "RELEASING_OBJECT"
+        self.last_action = "RELEASE_OBJECT"
+
+        print("Releasing object into the bin.")
+
+        self.arduino.release_object()
+
+        self.status = "OBJECT_RELEASED"
+        self.last_action = "OBJECT_RELEASED"
+
+        print("Object release completed.")    
 
     def _return_to_start(self) -> None:
         """
@@ -759,8 +786,13 @@ class TargetNavigator:
         if distance_cm <= 0:
             return
 
-        remaining_ms = int(
+        estimated_ms = (
             distance_cm / self.CM_PER_MS
+        )
+
+        remaining_ms = int(
+            estimated_ms
+            * self.RETURN_DURATION_SCALE
         )
 
         while remaining_ms > 0:

@@ -196,7 +196,7 @@ class ArduinoController:
             expected_prefix=(
                 f"COMMAND_DONE,{command_name}"
             ),
-            timeout_seconds=9,
+            timeout_seconds=13,
         )
 
         match = re.search(
@@ -281,7 +281,7 @@ class ArduinoController:
                     "POSITION_FOR_PICKUP"
                 )
 
-                deadline = time.monotonic() + 13
+                deadline = time.monotonic() + 23
 
                 while time.monotonic() < deadline:
                     line = self._read_line()
@@ -402,6 +402,20 @@ class ArduinoController:
 
             finally:
                 self.positioning_active.clear()
+
+    def grab_object(self) -> None:
+        self._send_and_wait(
+            command="GRAB_OBJECT",
+            expected_prefix="COMMAND_DONE,GRAB_OBJECT",
+            timeout_seconds=8.0,
+        )
+
+    def release_object(self) -> None:
+        self._send_and_wait(
+            command="RELEASE_OBJECT",
+            expected_prefix="COMMAND_DONE,RELEASE_OBJECT",
+            timeout_seconds=5.0,
+        )
 
     def stop(self) -> None:
         if not self.is_connected():

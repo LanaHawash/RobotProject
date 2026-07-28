@@ -54,8 +54,8 @@ const unsigned long TURN_STALL_TIMEOUT_MS = 350;
 // PICKUP POSITIONING SETTINGS
 // ==================================================
 
-const float PICKUP_TARGET_CM = 7.0;
-const float PICKUP_TOLERANCE_CM = 1.0;
+const float PICKUP_TARGET_CM = 6.0;
+const float PICKUP_TOLERANCE_CM = 0.5;
 
 const float MIN_VALID_DISTANCE_CM = 2.0;
 const float MAX_VALID_DISTANCE_CM = 200.0;

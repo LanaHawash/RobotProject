@@ -13,7 +13,14 @@ from robot_project.navigation.movement_history import (
 
 class TargetNavigator:
     FRAME_CENTER_X = 320
+    # Precise initial alignment before movement.
     CENTER_TOLERANCE_PX = 70
+
+    # Slightly wider tolerance while the robot is moving.
+    DRIVING_CENTER_TOLERANCE_PX = 95
+
+    # Stop after two consecutive genuinely misaligned updates.
+    MISALIGNMENT_CONFIRMATION_UPDATES = 2
 
     SMALL_TURN_DEGREES = 3
     LARGE_TURN_DEGREES = 6
@@ -34,12 +41,18 @@ class TargetNavigator:
     FAR_DISTANCE_CM = 50.0
     MEDIUM_DISTANCE_CM = 30.0
     PICKUP_POSITIONING_START_CM = 15.0
-    EMERGENCY_DISTANCE_CM = 4.0
+    CONTINUOUS_FORWARD_MIN_DISTANCE_CM = 40.0
+    EMERGENCY_DISTANCE_CM = 3.0
     MAX_PLAUSIBLE_APPROACH_DISTANCE_CM = 100.0
 
     FAR_FORWARD_MS = 500
-    MEDIUM_FORWARD_MS = 250
+    MEDIUM_FORWARD_MS = 120
     CLOSE_FORWARD_MS = 100
+
+    # Smooth far-distance drive. Arduino stops automatically if
+    # this heartbeat is not refreshed within its safety timeout.
+    CONTINUOUS_FORWARD_REFRESH_SECONDS = 0.4
+    MAX_CONTINUOUS_FORWARD_SEGMENT_SECONDS = 0.65
 
     MIN_VALID_OCCUPANCY = 0.001
     MAX_VALID_OCCUPANCY = 0.80
@@ -81,6 +94,12 @@ class TargetNavigator:
 
         self.last_pose = None
 
+        self.continuous_forward_active = False
+        self.last_forward_refresh_time = 0.0
+        self.continuous_forward_start_time = None
+        self.misaligned_updates = 0
+        
+        
     def start(self) -> None:
         if self.is_running():
             return
@@ -100,6 +119,11 @@ class TargetNavigator:
         self.last_ultrasonic_distance_cm = None
 
         self.last_pose = None
+
+        self.continuous_forward_active = False
+        self.last_forward_refresh_time = 0.0
+        self.continuous_forward_start_time = None
+        self.misaligned_updates = 0
 
         self.navigation_thread = threading.Thread(
             target=self._navigation_loop,
@@ -205,17 +229,13 @@ class TargetNavigator:
 
         self.status = "SEARCHING"
         lost_target_updates = 0
-        robot_already_stopped = False
 
         try:
             while not self.stop_event.is_set():
                 target = self.get_target()
 
                 if target is None:
-                    if not robot_already_stopped:
-                        self.arduino.stop()
-                        robot_already_stopped = True
-
+                    self._stop_continuous_forward()
                     self.centered_updates = 0
                     lost_target_updates += 1
 
@@ -235,54 +255,87 @@ class TargetNavigator:
                     continue
 
                 lost_target_updates = 0
-                robot_already_stopped = False
-
                 parsed_target = self._parse_target(target)
 
                 if parsed_target is None:
-                    self.arduino.stop()
-                    robot_already_stopped = True
+                    self._stop_continuous_forward()
                     self.centered_updates = 0
-
                     time.sleep(
                         self.TARGET_UPDATE_DELAY_SECONDS
                     )
                     continue
 
                 center_x, box_occupancy = parsed_target
-
                 horizontal_error = (
                     center_x - self.FRAME_CENTER_X
                 )
+                # Initial alignment is strict. Once the robot is already
+                # moving forward, allow a wider center area and require
+                # several consecutive misaligned updates before stopping.
+                if self.continuous_forward_active:
+                    allowed_offset = (
+                        self.DRIVING_CENTER_TOLERANCE_PX
+                    )
+                else:
+                    allowed_offset = self.CENTER_TOLERANCE_PX
 
                 target_is_centered = (
-                    abs(horizontal_error)
-                    <= self.CENTER_TOLERANCE_PX
+                    abs(horizontal_error) <= allowed_offset
                 )
 
-                if not target_is_centered:
+                if target_is_centered:
+                    self.misaligned_updates = 0
+                    self.centered_updates += 1
+
+                else:
                     self.centered_updates = 0
+
+                    if self.continuous_forward_active:
+                        self.misaligned_updates += 1
+
+                        self.status = "DRIVING_WITH_MINOR_DRIFT"
+                        self.last_action = (
+                            "MONITORING_ALIGNMENT "
+                            f"ERROR_PX={horizontal_error} "
+                            f"COUNT={self.misaligned_updates}/"
+                            f"{self.MISALIGNMENT_CONFIRMATION_UPDATES}"
+                        )
+
+                        if (
+                            self.misaligned_updates
+                            < self.MISALIGNMENT_CONFIRMATION_UPDATES
+                        ):
+                            self._maintain_continuous_forward(
+                                self.last_ultrasonic_distance_cm
+                                or 999.0
+                            )
+                            time.sleep(
+                                self.TARGET_UPDATE_DELAY_SECONDS
+                            )
+                            continue
+
+                    was_driving = self.continuous_forward_active
+
+                    self._stop_continuous_forward()
+
+                    self.misaligned_updates = 0
                     self.ultrasonic_search_pulses = 0
                     self.last_ultrasonic_distance_cm = None
 
-                    self._align_target(horizontal_error)
+                    self._align_target(
+                        horizontal_error,
+                        driving_correction=was_driving,
+                    )
 
                     time.sleep(
                         self.TARGET_UPDATE_DELAY_SECONDS
                     )
                     continue
-
-                # Ultrasonic remains inactive until the same selected
-                # target is centered for consecutive camera updates.
-                self.centered_updates += 1
-
                 if (
-                    self.centered_updates
+                    not self.continuous_forward_active
+                    and self.centered_updates
                     < self.REQUIRED_CENTERED_UPDATES
                 ):
-                    self.arduino.stop()
-                    robot_already_stopped = True
-
                     self.status = "CONFIRMING_ALIGNMENT"
                     self.last_action = (
                         "CENTERED_CONFIRMATION "
@@ -294,63 +347,42 @@ class TargetNavigator:
                         self.TARGET_UPDATE_DELAY_SECONDS
                     )
                     continue
-
-                # The robot is stopped before every ultrasonic read.
-                self.arduino.stop()
-                robot_already_stopped = True
-
+                # READ_DISTANCE does not stop the motors. During the far
+                # stage the robot continues forward while this reading is
+                # requested.
                 self.status = "ULTRASONIC_MONITORING"
                 self.last_action = "READ_DISTANCE"
+                distance_cm = self.arduino.read_distance_cm()
+                self.last_ultrasonic_distance_cm = distance_cm
 
-                distance_cm = (
-                    self.arduino.read_distance_cm()
-                )
-                self.last_ultrasonic_distance_cm = (
-                    distance_cm
-                )
+                if self._distance_is_unreliable(distance_cm):
+                    self._stop_continuous_forward()
 
-                if self._distance_is_unreliable(
-                    distance_cm
-                ):
                     if (
                         self.ultrasonic_search_pulses
-                        >=
-                        self.MAX_ULTRASONIC_SEARCH_PULSES
+                        >= self.MAX_ULTRASONIC_SEARCH_PULSES
                     ):
-                        self.status = (
-                            "ULTRASONIC_NOT_ACQUIRED"
-                        )
+                        self.status = "ULTRASONIC_NOT_ACQUIRED"
                         self.last_action = (
                             "STOP_ULTRASONIC_UNRELIABLE"
                         )
                         break
 
                     self.ultrasonic_search_pulses += 1
-
-                    self.status = (
-                        "CAUTIOUS_ULTRASONIC_SEARCH"
-                    )
+                    self.status = "CAUTIOUS_ULTRASONIC_SEARCH"
                     self.last_action = (
                         "FORWARD_SEARCH "
                         f"{self.ULTRASONIC_SEARCH_FORWARD_MS} "
-                        f"ATTEMPT="
-                        f"{self.ultrasonic_search_pulses}"
+                        f"ATTEMPT={self.ultrasonic_search_pulses}"
                     )
-
-                    actual_duration = (
-                        self.arduino.forward(
-                            self.ULTRASONIC_SEARCH_FORWARD_MS
-                        )
+                    actual_duration = self.arduino.forward(
+                        self.ULTRASONIC_SEARCH_FORWARD_MS
                     )
-
                     self.history.record_linear(
                         command="FORWARD",
                         duration_ms=actual_duration,
                         source="ULTRASONIC_SEARCH",
                     )
-
-                    robot_already_stopped = False
-
                     time.sleep(
                         self.TARGET_UPDATE_DELAY_SECONDS
                     )
@@ -358,26 +390,22 @@ class TargetNavigator:
 
                 self.ultrasonic_search_pulses = 0
 
-                if (
-                    distance_cm
-                    <= self.EMERGENCY_DISTANCE_CM
-                ):
-                    self.arduino.stop()
-                    robot_already_stopped = True
-
+                if distance_cm <= self.EMERGENCY_DISTANCE_CM:
+                    self._stop_continuous_forward()
                     raise RuntimeError(
                         "ERROR,OBJECT_TOO_CLOSE,"
                         f"DISTANCE_CM={distance_cm:.1f}"
                     )
 
+                # At 15 cm the smooth far drive ends. The existing
+                # Arduino fine-positioning routine then slows down and
+                # calibrates the final pickup position.
                 if (
                     distance_cm
-                    <=
-                    self.PICKUP_POSITIONING_START_CM
+                    <= self.PICKUP_POSITIONING_START_CM
                 ):
-                    self.status = (
-                        "POSITIONING_FOR_PICKUP"
-                    )
+                    self._stop_continuous_forward()
+                    self.status = "POSITIONING_FOR_PICKUP"
                     self.last_action = (
                         "POSITION_FOR_PICKUP "
                         f"DISTANCE_CM={distance_cm:.1f}"
@@ -389,10 +417,7 @@ class TargetNavigator:
                         "Starting fine pickup positioning."
                     )
 
-                    result = (
-                        self.arduino
-                        .position_for_pickup()
-                    )
+                    result = self.arduino.position_for_pickup()
 
                     if not result["success"]:
                         if self.stop_event.is_set():
@@ -403,75 +428,95 @@ class TargetNavigator:
                         self.history.extend_pulses(
                             result["pulses"]
                         )
-
-                        reason = result.get(
-                            "reason",
-                            "UNKNOWN",
-                        )
-
-                        self.status = (
-                            "PICKUP_POSITIONING_RETRY"
-                        )
+                        reason = result.get("reason", "UNKNOWN")
+                        self.status = "PICKUP_POSITIONING_RETRY"
                         self.last_action = (
                             "RETURN_TO_CAMERA_CONTROL "
                             f"REASON={reason}"
                         )
-
                         print(
-                            "Pickup positioning was "
-                            "not completed. Returning "
-                            "control to the camera: "
+                            "Pickup positioning was not completed. "
+                            "Returning control to the camera: "
                             f"{reason}"
                         )
-
                         self.centered_updates = 0
-                        robot_already_stopped = True
-
                         time.sleep(
                             self.TARGET_UPDATE_DELAY_SECONDS
                         )
                         continue
 
-                    self._complete_pickup_positioning(
-                        result
-                    )
-
+                    self._complete_pickup_positioning(result)
                     self._grab_object()
                     self._return_to_start()
                     self._face_bins()
                     self._release_object()
-
                     break
 
-                forward_duration = (
-                    self._approach_duration(distance_cm)
-                )
+                # Far away: use smooth continuous forward movement.
+                if (
+                    distance_cm
+                    > self.CONTINUOUS_FORWARD_MIN_DISTANCE_CM
+                ):
+                    # Start or refresh smooth forward movement.
+                    self._maintain_continuous_forward(
+                        distance_cm
+                    )
 
-                self.status = (
-                    "ULTRASONIC_APPROACHING"
-                )
+                    # Do not allow one uninterrupted forward section
+                    # to become too long.
+                    if (
+                        self.continuous_forward_start_time is not None
+                        and time.monotonic()
+                        - self.continuous_forward_start_time
+                        >= self.MAX_CONTINUOUS_FORWARD_SEGMENT_SECONDS
+                    ):
+                        self._stop_continuous_forward()
+
+                        # Require camera confirmation before the next burst.
+                        self.centered_updates = 0
+
+                        self.status = "FORWARD_SEGMENT_COMPLETE"
+                        self.last_action = (
+                            "STOP_AFTER_SMOOTH_SEGMENT "
+                            f"DISTANCE_CM={distance_cm:.1f}"
+                        )
+
+                    time.sleep(
+                        self.TARGET_UPDATE_DELAY_SECONDS
+                    )
+                    continue
+
+
+                # Between 15 cm and 30 cm, do not restart a long
+                # continuous movement. Use a short controlled movement,
+                # then check camera alignment and distance again.
+                self._stop_continuous_forward()
+
+                self.status = "CONTROLLED_MEDIUM_APPROACH"
                 self.last_action = (
-                    f"FORWARD {forward_duration} "
+                    "FORWARD_MEDIUM "
+                    f"{self.MEDIUM_FORWARD_MS} "
                     f"DISTANCE_CM={distance_cm:.1f}"
                 )
 
-                actual_duration = (
-                    self.arduino.forward(
-                        forward_duration
-                    )
+                actual_duration = self.arduino.forward(
+                    self.MEDIUM_FORWARD_MS
                 )
 
                 self.history.record_linear(
                     command="FORWARD",
                     duration_ms=actual_duration,
-                    source="ULTRASONIC_APPROACH",
+                    source="MEDIUM_APPROACH",
                 )
 
-                robot_already_stopped = False
+                # Require camera alignment confirmation again before
+                # allowing the next forward movement.
+                self.centered_updates = 0
 
                 time.sleep(
                     self.TARGET_UPDATE_DELAY_SECONDS
                 )
+                continue
 
         except Exception as error:
             if self.stop_event.is_set():
@@ -484,6 +529,7 @@ class TargetNavigator:
 
         finally:
             try:
+                self._stop_continuous_forward()
                 self.arduino.stop()
             except Exception as error:
                 print(
@@ -495,6 +541,62 @@ class TargetNavigator:
                 "Target navigation stopped. "
                 f"Status: {self.status}"
             )
+
+    def _maintain_continuous_forward(
+        self,
+        distance_cm: float,
+    ) -> None:
+        now = time.monotonic()
+
+        if not self.continuous_forward_active:
+            self.arduino.start_continuous_forward()
+            self.continuous_forward_active = True
+            self.last_forward_refresh_time = now
+            self.continuous_forward_start_time = now
+            self.status = "SMOOTH_FORWARD"
+            self.last_action = (
+                "START_CONTINUOUS_FORWARD "
+                f"DISTANCE_CM={distance_cm:.1f}"
+            )
+            return
+
+        if (
+            now - self.last_forward_refresh_time
+            >= self.CONTINUOUS_FORWARD_REFRESH_SECONDS
+        ):
+            self.arduino.refresh_continuous_forward()
+            self.last_forward_refresh_time = now
+
+        self.status = "SMOOTH_FORWARD"
+        self.last_action = (
+            "CONTINUOUS_FORWARD "
+            f"DISTANCE_CM={distance_cm:.1f}"
+        )
+
+    def _stop_continuous_forward(self) -> None:
+        if not self.continuous_forward_active:
+            return
+
+        stop_time = time.monotonic()
+        self.arduino.stop()
+
+        if self.continuous_forward_start_time is not None:
+            duration_ms = max(
+                1,
+                int(
+                    (stop_time - self.continuous_forward_start_time)
+                    * 1000
+                ),
+            )
+            self.history.record_linear(
+                command="FORWARD",
+                duration_ms=duration_ms,
+                source="CONTINUOUS_FORWARD",
+            )
+
+        self.continuous_forward_active = False
+        self.last_forward_refresh_time = 0.0
+        self.continuous_forward_start_time = None
 
     def _parse_target(
         self,
@@ -536,10 +638,13 @@ class TargetNavigator:
     def _align_target(
         self,
         horizontal_error: int,
+        driving_correction: bool = False,
     ) -> None:
         self.status = "ALIGNING"
 
-        if abs(horizontal_error) > 220:
+        if driving_correction:
+            turn_angle = self.SMALL_TURN_DEGREES
+        elif abs(horizontal_error) > 220:
             turn_angle = self.LARGE_TURN_DEGREES
         else:
             turn_angle = self.SMALL_TURN_DEGREES

@@ -39,6 +39,7 @@ const unsigned long TURN_START_BOOST_MS = 100;
 const float SLOW_TURN_ZONE_DEGREES = 7.0;
 
 const unsigned long MAX_DRIVE_TIME_MS = 5000;
+const unsigned long CONTINUOUS_DRIVE_TIMEOUT_MS = 3000;
 const unsigned long TURN_TIMEOUT_MS = 10000;
 
 const float MIN_TURN_ANGLE = 1.0;
@@ -54,12 +55,12 @@ const unsigned long TURN_STALL_TIMEOUT_MS = 350;
 // PICKUP POSITIONING SETTINGS
 // ==================================================
 
-const float PICKUP_TARGET_CM = 6.0;
-const float PICKUP_TOLERANCE_CM = 0.5;
+const float PICKUP_TARGET_CM = 5.0;
+const float PICKUP_TOLERANCE_CM = 1.0;
 
 const float MIN_VALID_DISTANCE_CM = 2.0;
 const float MAX_VALID_DISTANCE_CM = 200.0;
-const float EMERGENCY_MIN_DISTANCE_CM = 4.0;
+const float EMERGENCY_MIN_DISTANCE_CM = 3.0;
 
 const unsigned long FAR_FORWARD_PULSE_MS = 60;
 const unsigned long NEAR_FORWARD_PULSE_MS = 25;
@@ -68,7 +69,7 @@ const unsigned long NEAR_BACKWARD_PULSE_MS = 25;
 
 const float LARGE_POSITION_ERROR_CM = 4.0;
 
-const uint8_t REQUIRED_STABLE_READINGS = 5;
+const uint8_t REQUIRED_STABLE_READINGS = 3;
 const uint8_t MAX_INVALID_READINGS = 5;
 
 const unsigned long PICKUP_TIMEOUT_MS = 20000;
@@ -140,6 +141,8 @@ int16_t gx, gy, gz;
 
 float gyroZBias = 0.0;
 
+bool continuousForwardActive = false;
+unsigned long continuousForwardLastRefreshMs = 0;
 
 // ==================================================
 // MOTOR FUNCTIONS
@@ -163,6 +166,8 @@ void stopMotors()
   digitalWrite(IN2, LOW);
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, LOW);
+
+  continuousForwardActive = false;
 }
 
 void setForwardDirection()
@@ -205,6 +210,59 @@ void moveBackwardAtSpeed(uint8_t speedValue)
 {
   setBackwardDirection();
   setMotorSpeed(speedValue, speedValue);
+}
+
+void startContinuousForward()
+{
+  setForwardDirection();
+  setMotorSpeed(DRIVE_SPEED, DRIVE_SPEED);
+
+  continuousForwardActive = true;
+  continuousForwardLastRefreshMs = millis();
+
+  Serial.println(
+      F("CONTINUOUS_FORWARD_STARTED")
+  );
+}
+
+
+void refreshContinuousForward()
+{
+  if (!continuousForwardActive)
+  {
+    startContinuousForward();
+    return;
+  }
+
+  continuousForwardLastRefreshMs = millis();
+
+  Serial.println(
+      F("CONTINUOUS_FORWARD_REFRESHED")
+  );
+}
+
+
+void monitorContinuousForward()
+{
+  if (!continuousForwardActive)
+  {
+    return;
+  }
+
+  unsigned long elapsedMs =
+      millis() - continuousForwardLastRefreshMs;
+
+  if (
+    elapsedMs >=
+    CONTINUOUS_DRIVE_TIMEOUT_MS
+  )
+  {
+    stopMotors();
+
+    Serial.println(
+        F("CONTINUOUS_FORWARD_TIMEOUT_STOP")
+    );
+  }
 }
 
 void setRightTurnDirection()
@@ -1317,6 +1375,17 @@ void processCommand(String command)
     return;
   }
 
+  if (command == "START_FORWARD")
+  {
+    startContinuousForward();
+    return;
+  }
+
+  if (command == "REFRESH_FORWARD")
+  {
+    refreshContinuousForward();
+    return;
+  }
   if (command == "STOP")
   {
     stopMotors();
@@ -1503,4 +1572,6 @@ void loop()
 
     processCommand(command);
   }
+
+  monitorContinuousForward();
 }

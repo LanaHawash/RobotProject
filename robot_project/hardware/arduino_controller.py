@@ -141,6 +141,63 @@ class ArduinoController:
 
         return response == "PONG"
 
+
+    def start_continuous_forward(self) -> None:
+        """Start forward motion without a fixed duration."""
+        self._send_and_wait(
+            command="START_FORWARD",
+            expected_prefix="CONTINUOUS_FORWARD_STARTED",
+            timeout_seconds=2.0,
+        )
+
+
+
+    def refresh_continuous_forward(self) -> None:
+        """
+        Refresh continuous driving.
+
+        Arduino may reply STARTED if its safety timeout expired
+        immediately before the refresh arrived.
+        """
+        if not self.is_connected():
+            raise RuntimeError(
+                "Arduino is not connected."
+            )
+
+        with self.command_lock:
+            self._write_command("REFRESH_FORWARD")
+
+            deadline = time.monotonic() + 2.0
+
+            while time.monotonic() < deadline:
+                line = self._read_line()
+
+                if not line:
+                    continue
+
+                print(
+                    "Arduino -> Raspberry Pi: "
+                    f"{line}"
+                )
+
+                if line.startswith("ERROR,"):
+                    raise RuntimeError(line)
+
+                if line.startswith(
+                    "CONTINUOUS_FORWARD_REFRESHED"
+                ):
+                    return
+
+                if line.startswith(
+                    "CONTINUOUS_FORWARD_STARTED"
+                ):
+                    return
+
+            raise TimeoutError(
+                "Timed out waiting for "
+                "continuous-forward refresh."
+            )
+
     def forward(self, duration_ms: int) -> int:
         self._validate_duration(duration_ms)
 

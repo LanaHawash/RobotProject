@@ -219,10 +219,25 @@ def camera_processing_loop():
             # Depth remains available for display/debugging, but it is
             # no longer required by the navigation target returned here.
             navigation_target_data = None
+            eligible_detections = detections
+            if (
+                navigator.is_running()
+                and navigator.locked_object_class
+            ):
+            
+                
 
-            if detections:
+                
+                eligible_detections = [
+                    detection
+                    for detection in detections
+                    if detection["class"]
+                    == navigator.locked_object_class
+                ]
+
+            if eligible_detections:
                 live_target = max(
-                    detections,
+                    eligible_detections,
                     key=lambda detection: (
                         detection["bounding_box"][2]
                         - detection["bounding_box"][0]

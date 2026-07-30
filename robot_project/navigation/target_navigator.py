@@ -75,6 +75,28 @@ class TargetNavigator:
     MAX_BIN_SEARCH_UPDATES = 40
     REQUIRED_BIN_DETECTIONS = 3
 
+
+    BIN_CENTER_TOLERANCE_PX = 45
+    REQUIRED_BIN_CENTERED_UPDATES = 3
+
+    BIN_ALIGNMENT_TURN_DEGREES = 3
+    BIN_ALIGNMENT_DELAY_SECONDS = 0.25
+    MAX_BIN_ALIGNMENT_UPDATES = 80
+
+    BIN_RELEASE_DISTANCE_CM = 10.0
+    BIN_EMERGENCY_DISTANCE_CM = 5.0
+
+    BIN_FAR_DISTANCE_CM = 45.0
+    BIN_MEDIUM_DISTANCE_CM = 25.0
+
+    BIN_FAR_FORWARD_MS = 180
+    BIN_MEDIUM_FORWARD_MS = 100
+    BIN_CLOSE_FORWARD_MS = 50
+
+    MAX_BIN_APPROACH_UPDATES = 100
+    BIN_APPROACH_DELAY_SECONDS = 0.20
+    MAX_BIN_LOST_UPDATES = 8
+
     def __init__(
         self,
         arduino: ArduinoController,
@@ -491,6 +513,9 @@ class TargetNavigator:
                     self._return_to_start()
                     self._face_bins()
                     self._find_locked_bin()
+                    self._align_with_locked_bin()
+                    self._approach_locked_bin()
+                    self._release_object()
                     break
 
                 # Far away: use smooth continuous forward movement.
@@ -745,6 +770,20 @@ class TargetNavigator:
 
         return self.CLOSE_FORWARD_MS
 
+
+    def _bin_approach_duration(
+        self,
+        distance_cm: float,
+    ) -> int:
+        if distance_cm > self.BIN_FAR_DISTANCE_CM:
+            return self.BIN_FAR_FORWARD_MS
+
+        if distance_cm > self.BIN_MEDIUM_DISTANCE_CM:
+            return self.BIN_MEDIUM_FORWARD_MS
+
+        return self.BIN_CLOSE_FORWARD_MS
+
+    
     def _complete_pickup_positioning(
         self,
         result: dict,
@@ -976,7 +1015,299 @@ class TargetNavigator:
         raise RuntimeError(
             "The locked bin was not found within the search period: "
             f"{self.locked_bin_color}"
-        )    
+        )  
+
+    def _align_with_locked_bin(self) -> dict:
+        """
+        Turn in small steps until the locked-color bin is centered.
+
+        Camera orientation in this project:
+        image left  -> turn robot right
+        image right -> turn robot left
+        """
+        if not self.locked_bin_color:
+            raise RuntimeError(
+                "Cannot align with a bin because no bin color is locked."
+            )
+
+        self.status = "ALIGNING_WITH_BIN"
+
+        centered_updates = 0
+        lost_updates = 0
+
+        for _ in range(self.MAX_BIN_ALIGNMENT_UPDATES):
+            if self.stop_event.is_set():
+                raise RuntimeError(
+                    "Bin alignment was stopped."
+                )
+
+            detection = self._get_locked_bin_detection()
+
+            if detection is None:
+                centered_updates = 0
+                lost_updates += 1
+
+                self.last_action = (
+                    f"BIN_NOT_VISIBLE "
+                    f"{lost_updates}/{self.MAX_BIN_LOST_UPDATES}"
+                )
+
+                if lost_updates >= self.MAX_BIN_LOST_UPDATES:
+                    raise RuntimeError(
+                        "The locked bin was lost during alignment."
+                    )
+
+                time.sleep(
+                    self.BIN_ALIGNMENT_DELAY_SECONDS
+                )
+                continue
+
+            lost_updates = 0
+
+            horizontal_error = (
+                detection["center_x"]
+                - self.FRAME_CENTER_X
+            )
+
+            if (
+                abs(horizontal_error)
+                <= self.BIN_CENTER_TOLERANCE_PX
+            ):
+                centered_updates += 1
+
+                self.last_action = (
+                    "BIN_CENTERED_CONFIRMATION "
+                    f"{centered_updates}/"
+                    f"{self.REQUIRED_BIN_CENTERED_UPDATES} "
+                    f"ERROR_PX={horizontal_error}"
+                )
+
+                if (
+                    centered_updates
+                    >= self.REQUIRED_BIN_CENTERED_UPDATES
+                ):
+                    self.status = "BIN_ALIGNED"
+                    self.last_action = (
+                        "BIN_ALIGNED "
+                        f"COLOR={self.locked_bin_color} "
+                        f"CENTER_X={detection['center_x']}"
+                    )
+
+                    print(
+                        "Bin alignment completed: "
+                        f"color={self.locked_bin_color}, "
+                        f"center_x={detection['center_x']}"
+                    )
+
+                    return detection
+
+                time.sleep(
+                    self.BIN_ALIGNMENT_DELAY_SECONDS
+                )
+                continue
+
+            centered_updates = 0
+
+            if horizontal_error < 0:
+                self.last_action = (
+                    "ALIGN_BIN TURN_RIGHT "
+                    f"{self.BIN_ALIGNMENT_TURN_DEGREES} "
+                    f"ERROR_PX={horizontal_error}"
+                )
+
+                actual_angle = self.arduino.turn_right(
+                    self.BIN_ALIGNMENT_TURN_DEGREES
+                )
+
+                self.history.record_turn(
+                    command="TURN_RIGHT",
+                    angle=actual_angle,
+                )
+
+            else:
+                self.last_action = (
+                    "ALIGN_BIN TURN_LEFT "
+                    f"{self.BIN_ALIGNMENT_TURN_DEGREES} "
+                    f"ERROR_PX={horizontal_error}"
+                )
+
+                actual_angle = self.arduino.turn_left(
+                    self.BIN_ALIGNMENT_TURN_DEGREES
+                )
+
+                self.history.record_turn(
+                    command="TURN_LEFT",
+                    angle=actual_angle,
+                )
+
+            time.sleep(
+                self.BIN_ALIGNMENT_DELAY_SECONDS
+            )
+
+        raise RuntimeError(
+            "The robot could not align with the locked bin."
+        )
+
+
+    def _approach_locked_bin(self) -> float:
+        """
+        Move toward the locked bin while repeatedly checking both
+        camera alignment and ultrasonic distance.
+        """
+        self.status = "APPROACHING_BIN"
+
+        lost_updates = 0
+
+        for _ in range(self.MAX_BIN_APPROACH_UPDATES):
+            if self.stop_event.is_set():
+                raise RuntimeError(
+                    "Bin approach was stopped."
+                )
+
+            detection = self._get_locked_bin_detection()
+
+            if detection is None:
+                lost_updates += 1
+
+                self.last_action = (
+                    f"BIN_LOST_DURING_APPROACH "
+                    f"{lost_updates}/{self.MAX_BIN_LOST_UPDATES}"
+                )
+
+                if lost_updates >= self.MAX_BIN_LOST_UPDATES:
+                    raise RuntimeError(
+                        "The locked bin was lost during approach."
+                    )
+
+                time.sleep(
+                    self.BIN_APPROACH_DELAY_SECONDS
+                )
+                continue
+
+            lost_updates = 0
+
+            horizontal_error = (
+                detection["center_x"]
+                - self.FRAME_CENTER_X
+            )
+
+            if (
+                abs(horizontal_error)
+                > self.BIN_CENTER_TOLERANCE_PX
+            ):
+                self.last_action = (
+                    "BIN_APPROACH_REALIGN "
+                    f"ERROR_PX={horizontal_error}"
+                )
+
+                if horizontal_error < 0:
+                    actual_angle = self.arduino.turn_right(
+                        self.BIN_ALIGNMENT_TURN_DEGREES
+                    )
+
+                    self.history.record_turn(
+                        command="TURN_RIGHT",
+                        angle=actual_angle,
+                    )
+                else:
+                    actual_angle = self.arduino.turn_left(
+                        self.BIN_ALIGNMENT_TURN_DEGREES
+                    )
+
+                    self.history.record_turn(
+                        command="TURN_LEFT",
+                        angle=actual_angle,
+                    )
+
+                time.sleep(
+                    self.BIN_APPROACH_DELAY_SECONDS
+                )
+                continue
+
+            distance_cm = self.arduino.read_distance_cm()
+
+            if self._distance_is_unreliable(distance_cm):
+                self.last_action = (
+                    "BIN_DISTANCE_UNRELIABLE"
+                )
+
+                time.sleep(
+                    self.BIN_APPROACH_DELAY_SECONDS
+                )
+                continue
+
+            if distance_cm <= self.BIN_EMERGENCY_DISTANCE_CM:
+                self.arduino.stop()
+
+                raise RuntimeError(
+                    "Emergency stop during bin approach: "
+                    f"{distance_cm:.1f} cm."
+                )
+
+            if distance_cm <= self.BIN_RELEASE_DISTANCE_CM:
+                self.arduino.stop()
+
+                self.status = "BIN_RELEASE_POSITION_REACHED"
+                self.last_action = (
+                    "BIN_RELEASE_POSITION_REACHED "
+                    f"DISTANCE_CM={distance_cm:.1f}"
+                )
+
+                print(
+                    "Bin release position reached at "
+                    f"{distance_cm:.1f} cm."
+                )
+
+                return distance_cm
+
+            forward_ms = self._bin_approach_duration(
+                distance_cm
+            )
+
+            self.last_action = (
+                "APPROACH_BIN FORWARD "
+                f"{forward_ms} "
+                f"DISTANCE_CM={distance_cm:.1f}"
+            )
+
+            actual_duration = self.arduino.forward(
+                forward_ms
+            )
+
+            self.history.record_linear(
+                command="FORWARD",
+                duration_ms=actual_duration,
+                source="BIN_APPROACH",
+            )
+
+            time.sleep(
+                self.BIN_APPROACH_DELAY_SECONDS
+            )
+
+        self.arduino.stop()
+
+        raise RuntimeError(
+            "The robot did not reach the bin release distance."
+        )
+
+    def _get_locked_bin_detection(self):
+        frame = self.get_raw_frame()
+
+        if frame is None:
+            return None
+
+        detection = self.bin_color_detector.detect(
+            frame,
+            self.locked_bin_color,
+        )
+
+        self.current_bin_target = (
+            detection.copy()
+            if detection is not None
+            else None
+        )
+
+        return detection  
 
     def _execute_turn(
         self,

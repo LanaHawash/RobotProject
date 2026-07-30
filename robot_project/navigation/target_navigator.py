@@ -10,6 +10,11 @@ from robot_project.navigation.movement_history import (
     MovementHistory,
 )
 
+from robot_project.config import DESTINATION_BIN_COLORS
+from robot_project.detection.bin_color_detector import (
+    BinColorDetector,
+)
+
 
 class TargetNavigator:
     FRAME_CENTER_X = 320
@@ -66,15 +71,20 @@ class TargetNavigator:
     MIN_EXECUTABLE_TURN_DEGREES = 1.0
     RETURN_DURATION_SCALE = 0.4
 
+    BIN_SEARCH_UPDATE_DELAY_SECONDS = 0.25
+    MAX_BIN_SEARCH_UPDATES = 40
+    REQUIRED_BIN_DETECTIONS = 3
+
     def __init__(
         self,
         arduino: ArduinoController,
-        get_target: Callable[
-            [], Optional[dict]
-        ],
+        get_target: Callable[[], Optional[dict]],
+        get_raw_frame: Callable[[], object],
     ):
         self.arduino = arduino
         self.get_target = get_target
+        self.get_raw_frame = get_raw_frame
+        self.bin_color_detector = BinColorDetector()
 
         self.navigation_thread = None
         self.stop_event = threading.Event()
@@ -84,6 +94,10 @@ class TargetNavigator:
         self.status = "IDLE"
         self.last_action = None
         self.error = None
+        self.locked_object_class = None
+        self.locked_destination = None
+        self.locked_bin_color = None
+        self.current_bin_target = None
 
         self.pickup_distance_cm = None
         self.pickup_pulses = []
@@ -100,10 +114,36 @@ class TargetNavigator:
         self.misaligned_updates = 0
         
         
-    def start(self) -> None:
+    def start(self, selected_target: dict) -> None:
         if self.is_running():
             return
 
+        object_class = selected_target.get("label")
+        destination = selected_target.get("destination")
+
+        if not object_class or not destination:
+            raise RuntimeError(
+                "The confirmed target has no class or destination."
+            )
+        self.locked_object_class = object_class
+        self.locked_destination = destination
+
+        self.locked_bin_color = DESTINATION_BIN_COLORS.get(
+            self.locked_destination
+        )
+
+        if self.locked_bin_color is None:
+            raise RuntimeError(
+                "No bin color is configured for destination "
+                f"'{self.locked_destination}'."
+            )
+
+        print(
+            "Navigation target locked: "
+            f"object={self.locked_object_class}, "
+            f"destination={self.locked_destination}, "
+            f"bin_color={self.locked_bin_color}"
+        )
         self.stop_event.clear()
         self.history.clear()
 
@@ -124,6 +164,7 @@ class TargetNavigator:
         self.last_forward_refresh_time = 0.0
         self.continuous_forward_start_time = None
         self.misaligned_updates = 0
+        self.current_bin_target = None
 
         self.navigation_thread = threading.Thread(
             target=self._navigation_loop,
@@ -449,7 +490,7 @@ class TargetNavigator:
                     self._grab_object()
                     self._return_to_start()
                     self._face_bins()
-                    self._release_object()
+                    self._find_locked_bin()
                     break
 
                 # Far away: use smooth continuous forward movement.
@@ -854,6 +895,88 @@ class TargetNavigator:
             f"Facing bins after turning "
             f"{turn_to_bins:.1f} degrees."
         )
+
+    def _find_locked_bin(self) -> dict:
+        """
+        Search fresh camera frames for the bin whose color was locked
+        when navigation started.
+
+        This method only detects and confirms the bin. It does not turn
+        or drive the robot.
+        """
+        if not self.locked_bin_color:
+            raise RuntimeError(
+                "Cannot search for a bin because no bin color is locked."
+            )
+
+        self.status = "SEARCHING_FOR_BIN"
+        self.last_action = (
+            f"SEARCH_BIN COLOR={self.locked_bin_color}"
+        )
+        self.current_bin_target = None
+
+        consecutive_detections = 0
+
+        for _ in range(self.MAX_BIN_SEARCH_UPDATES):
+            if self.stop_event.is_set():
+                raise RuntimeError(
+                    "Bin search was stopped."
+                )
+
+            frame = self.get_raw_frame()
+
+            detection = self.bin_color_detector.detect(
+                frame,
+                self.locked_bin_color,
+            )
+
+            if detection is None:
+                consecutive_detections = 0
+                self.current_bin_target = None
+                self.last_action = (
+                    f"SEARCH_BIN COLOR={self.locked_bin_color} "
+                    "NOT_VISIBLE"
+                )
+            else:
+                consecutive_detections += 1
+                self.current_bin_target = detection
+
+                self.last_action = (
+                    f"BIN_VISIBLE COLOR={self.locked_bin_color} "
+                    f"CONFIRMATION={consecutive_detections}/"
+                    f"{self.REQUIRED_BIN_DETECTIONS}"
+                )
+
+                if (
+                    consecutive_detections
+                    >= self.REQUIRED_BIN_DETECTIONS
+                ):
+                    self.status = "BIN_FOUND"
+                    self.last_action = (
+                        f"BIN_FOUND COLOR={self.locked_bin_color} "
+                        f"CENTER_X={detection['center_x']} "
+                        f"AREA={detection['area']}"
+                    )
+
+                    print(
+                        "Locked bin found: "
+                        f"color={self.locked_bin_color}, "
+                        f"center_x={detection['center_x']}, "
+                        f"area={detection['area']}"
+                    )
+
+                    return detection
+
+            time.sleep(
+                self.BIN_SEARCH_UPDATE_DELAY_SECONDS
+            )
+
+        self.current_bin_target = None
+
+        raise RuntimeError(
+            "The locked bin was not found within the search period: "
+            f"{self.locked_bin_color}"
+        )    
 
     def _execute_turn(
         self,

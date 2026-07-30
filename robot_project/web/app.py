@@ -18,6 +18,10 @@ from robot_project.detection.object_selector import ObjectSelector
 from robot_project.web.capture import image_count, save_image
 from robot_project.world.manager import ObjectManager
 
+from robot_project.detection.bin_color_detector import (
+    BinColorDetector,
+)
+
 
 app = Flask(__name__)
 
@@ -25,6 +29,7 @@ camera = CameraPipeline()
 detector = Detector()
 manager = ObjectManager()
 selector = ObjectSelector()
+
 fps_counter = FPS()
 arduino = ArduinoController()
 arduino_error = None
@@ -85,11 +90,21 @@ def get_navigation_target():
         return current_navigation_target.copy()
 
 
+
+
+
+def get_raw_frame():
+    with frame_lock:
+        if latest_raw_frame is None:
+            return None
+
+        return latest_raw_frame.copy()
+
 navigator = TargetNavigator(
     arduino=arduino,
     get_target=get_navigation_target,
+    get_raw_frame=get_raw_frame,
 )
-
 
 def create_depth_visualization(depth_frame):
     """
@@ -600,6 +615,10 @@ def status():
             "error": navigator.error,
         },
         "processing_error": error,
+        "locked_object_class": navigator.locked_object_class,
+        "locked_destination": navigator.locked_destination,
+        "locked_bin_color": navigator.locked_bin_color,
+    
     }
 
 @app.route("/navigation/start")
@@ -614,11 +633,20 @@ def start_navigation():
         }, 503
 
     with frame_lock:
-        target_available = (
+        navigation_target_available = (
             current_navigation_target is not None
         )
 
-    if not target_available:
+        selected_target = (
+            latest_selected_target.copy()
+            if latest_selected_target is not None
+            else None
+        )
+
+    if (
+        not navigation_target_available
+        or selected_target is None
+    ):
         return {
             "started": False,
             "error": (
@@ -632,7 +660,13 @@ def start_navigation():
             "error": "The robot is currently returning.",
         }, 409
 
-    navigator.start()
+    try:
+        navigator.start(selected_target)
+    except RuntimeError as error:
+        return {
+            "started": False,
+            "error": str(error),
+        }, 409
 
     return {
         "started": True,
@@ -691,7 +725,14 @@ def navigation_status():
             current_navigation_target.copy()
             if current_navigation_target is not None
             else None
+            
         )
+        raw_frame = (
+            latest_raw_frame.copy()
+            if latest_raw_frame is not None
+            else None
+        )
+        
 
     return {
         "running": navigator.is_running(),
@@ -707,6 +748,14 @@ def navigation_status():
         "movement_history": navigator.movement_history(),
         "simplified_history": navigator.simplified_history(),
         "return_route": navigator.return_route(),
+        "locked_object_class": navigator.locked_object_class,
+        "locked_destination": navigator.locked_destination,
+        "locked_bin_color": navigator.locked_bin_color,
+        "current_bin_target": (
+            navigator.current_bin_target.copy()
+            if navigator.current_bin_target is not None
+            else None
+        ),
         
     }
 

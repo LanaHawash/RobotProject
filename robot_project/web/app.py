@@ -90,7 +90,30 @@ def get_navigation_target():
         return current_navigation_target.copy()
 
 
+def get_confirmed_target():
+    with frame_lock:
+        if latest_selected_target is None:
+            return None
 
+        return latest_selected_target.copy()
+
+def clear_confirmed_target():
+    global latest_selected_target
+    global current_navigation_target
+    global latest_candidate_status
+
+    selector.clear_target()
+
+    with frame_lock:
+        latest_selected_target = None
+        current_navigation_target = None
+
+        latest_candidate_status = {
+            "label": None,
+            "frames_seen": 0,
+            "average_confidence": None,
+            "average_distance_mm": None,
+        }    
 
 
 def get_raw_frame():
@@ -104,6 +127,8 @@ navigator = TargetNavigator(
     arduino=arduino,
     get_target=get_navigation_target,
     get_raw_frame=get_raw_frame,
+    get_confirmed_target=get_confirmed_target,
+    clear_confirmed_target=clear_confirmed_target,
 )
 
 def create_depth_visualization(depth_frame):

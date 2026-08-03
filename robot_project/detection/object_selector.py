@@ -77,13 +77,17 @@ class ObjectSelector:
         )
 
     def _choose_closest_valid_detection(self, detections):
+        """
+        Choose the visible detection occupying the largest image area.
+
+        Depth is not required. A detection only needs to satisfy the
+        minimum confidence threshold.
+        """
         valid_detections = [
             detection
             for detection in detections
             if (
-                detection["distance_mm"] is not None
-                and detection["distance_mm"] > 0
-                and detection["confidence"]
+                detection["confidence"]
                 >= self.minimum_detection_confidence
             )
         ]
@@ -91,9 +95,16 @@ class ObjectSelector:
         if not valid_detections:
             return None
 
-        return min(
+        return max(
             valid_detections,
-            key=lambda detection: detection["distance_mm"],
+            key=lambda detection: (
+                detection["bounding_box"][2]
+                - detection["bounding_box"][0]
+            )
+            * (
+                detection["bounding_box"][3]
+                - detection["bounding_box"][1]
+            ),
         )
 
     def _start_new_candidate(self, detection):
@@ -104,7 +115,15 @@ class ObjectSelector:
         self.candidate_center_y = center_y
 
         self.confidence_history = [detection["confidence"]]
-        self.distance_history = [detection["distance_mm"]]
+        self.distance_history = []
+
+        if (
+            detection["distance_mm"] is not None
+            and detection["distance_mm"] > 0
+        ):
+            self.distance_history.append(
+                detection["distance_mm"]
+            )
 
     def _update_candidate(self, detection):
         center_x, center_y = detection["center"]
@@ -113,7 +132,13 @@ class ObjectSelector:
         self.candidate_center_y = center_y
 
         self.confidence_history.append(detection["confidence"])
-        self.distance_history.append(detection["distance_mm"])
+        if (
+            detection["distance_mm"] is not None
+            and detection["distance_mm"] > 0
+        ):
+            self.distance_history.append(
+                detection["distance_mm"]
+            )
 
     def update(self, detections):
         """
@@ -142,9 +167,13 @@ class ObjectSelector:
             / len(self.confidence_history)
         )
 
-        average_distance = int(
-            sum(self.distance_history)
-            / len(self.distance_history)
+        average_distance = (
+            int(
+                sum(self.distance_history)
+                / len(self.distance_history)
+            )
+            if self.distance_history
+            else None
         )
 
         if average_confidence >= self.normal_confidence_threshold:
@@ -183,9 +212,13 @@ class ObjectSelector:
             / len(self.confidence_history)
         )
 
-        average_distance = int(
-            sum(self.distance_history)
-            / len(self.distance_history)
+        average_distance = (
+            int(
+                sum(self.distance_history)
+                / len(self.distance_history)
+            )
+            if self.distance_history
+            else None
         )
 
         return {

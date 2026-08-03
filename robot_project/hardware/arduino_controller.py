@@ -142,6 +142,15 @@ class ArduinoController:
         return response == "PONG"
 
 
+    def calibrate_imu(self) -> None:
+        """
+        Recalibrate the MPU6050 while the robot is stationary.
+        """
+        self._send_and_wait(
+            command="CALIBRATE_IMU",
+            expected_prefix="IMU_CALIBRATION_DONE",
+            timeout_seconds=10.0,
+        )
     def start_continuous_forward(self) -> None:
         """Start forward motion without a fixed duration."""
         self._send_and_wait(

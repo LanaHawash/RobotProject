@@ -1,7 +1,5 @@
 import threading
 import time
-import atexit
-import signal
 
 import cv2
 from flask import Flask, Response
@@ -31,16 +29,25 @@ fps_counter = FPS()
 arduino = ArduinoController()
 arduino_error = None
 
-processing_thread = None
+camera.create_rgb()
+camera.create_depth()
+camera.start()
 
-system_start_lock = threading.Lock()
-system_started = False
+try:
+    arduino.connect()
+
+    if not arduino.ping():
+        raise RuntimeError(
+            "Arduino did not respond to PING."
+        )
+
+except Exception as error:
+    arduino_error = str(error)
+    print(f"Arduino connection error: {error}")
 
 # Protect shared frames because the processing thread writes them
 # while Flask routes read them.
 frame_lock = threading.Lock()
-shutdown_lock = threading.Lock()
-shutdown_complete = False
 
 latest_raw_frame = None
 latest_annotated_frame = None
@@ -54,7 +61,6 @@ current_closest_object = None
 current_navigation_target = None
 
 latest_candidate_status = {
-   
     "label": None,
     "frames_seen": 0,
     "average_confidence": None,
@@ -69,11 +75,7 @@ processing_error = None
 # One second tolerates an isolated slow frame while preventing
 # navigation from continuing with an old image after a camera stall.
 CAMERA_DATA_MAX_AGE_SECONDS = 1.0
-# ByteTrack can occasionally assign a new ID to the same
-# physical object after a temporary detection loss.
-TRACK_RECOVERY_CONFIRMATION_FRAMES = 2
-TRACK_RECOVERY_MAX_CENTER_SHIFT_PX = 120
-TRACK_RECOVERY_MAX_AREA_RATIO = 2.0
+
 latest_camera_update_time = None
 
 
@@ -133,7 +135,6 @@ def clear_confirmed_target():
         current_navigation_target = None
 
         latest_candidate_status = {
-           
             "label": None,
             "frames_seen": 0,
             "average_confidence": None,
@@ -250,17 +251,8 @@ def camera_processing_loop():
     print("Camera processing thread started.")
 
     last_reported_target = None
-    last_reference_track_id = None
-    last_reference_center = None
-    last_reference_box_area = None
 
-    recovery_candidate_track_id = None
-    recovery_candidate_frames = 0
-
-    while (
-        not shutdown_complete
-        and camera.is_running()
-    ):
+    while camera.is_running():
         try:
             rgb_message = camera.rgb_queue.get()
             depth_message = camera.depth_queue.get()
@@ -305,15 +297,7 @@ def camera_processing_loop():
             # Depth remains available for display/debugging, but it is
             # no longer required by the navigation target returned here.
             navigation_target_data = None
-
-            # While navigation is running, follow only the exact
-            # ByteTrack object locked by TargetNavigator.
-            #
-            # Before navigation starts, follow the exact object
-            # confirmed by ObjectSelector so the Start route receives
-            # matching selected-target and navigation-target data.
             eligible_detections = detections
-
             if (
                 navigator.is_running()
                 and navigator.locked_object_class
@@ -321,12 +305,9 @@ def camera_processing_loop():
                 eligible_detections = [
                     detection
                     for detection in detections
-                    if (
-                        detection["class"]
-                        == navigator.locked_object_class
-                    )
+                    if detection["class"]
+                    == navigator.locked_object_class
                 ]
-
 
             if eligible_detections:
                 live_target = max(
@@ -358,7 +339,7 @@ def camera_processing_loop():
 
                 navigation_target_data = {
                     "label": live_target["class"],
-                    #"track_id": live_target.get("track_id"),
+                    "track_id": live_target.get("track_id"),
                     "confidence": round(
                         live_target["confidence"],
                         3,
@@ -379,7 +360,6 @@ def camera_processing_loop():
                 last_reported_target = None
             else:
                 selected_target_data = {
-                   
                     "label": selected_target.label,
                     "average_confidence": round(
                         selected_target.average_confidence,
@@ -473,14 +453,6 @@ def camera_processing_loop():
                 processing_error = None
 
         except Exception as error:
-            # Closing the camera interrupts blocked queue reads.
-            # This is expected during application shutdown.
-            if (
-                shutdown_complete
-                or not camera.is_running()
-            ):
-                break
-
             # Preserve the last successful camera result briefly.
             # If processing does not recover, the freshness timeout
             # automatically prevents navigation from using it.
@@ -506,10 +478,7 @@ def generate_stream(frame_type):
         depth
     """
 
-    while (
-        not shutdown_complete
-        and camera.is_running()
-    ):
+    while True:
         with frame_lock:
             if not _camera_data_is_fresh_locked():
                 frame = None
@@ -747,7 +716,6 @@ def status():
 
             candidate_status = {
                 "label": None,
-               
                 "frames_seen": 0,
                 "average_confidence": None,
                 "average_distance_mm": None,
@@ -784,7 +752,6 @@ def status():
             "error": navigator.error,
         },
         "processing_error": error,
-  
         "locked_object_class": navigator.locked_object_class,
         "locked_destination": navigator.locked_destination,
         "locked_bin_color": navigator.locked_bin_color,
@@ -802,17 +769,6 @@ def start_navigation():
             ),
         }, 503
 
-    if navigator.is_returning():
-        return {
-            "started": False,
-            "error": "The robot is currently returning.",
-        }, 409
-
-    if navigator.is_running():
-        return {
-            "started": False,
-            "error": "Navigation is already running.",
-        }, 409
     navigation_target = get_navigation_target()
     selected_target = get_confirmed_target()
 
@@ -827,8 +783,11 @@ def start_navigation():
             ),
         }, 409
 
-   
-    
+    if navigator.is_returning():
+        return {
+            "started": False,
+            "error": "The robot is currently returning.",
+        }, 409
 
     try:
         navigator.start(selected_target)
@@ -906,7 +865,6 @@ def navigation_status():
         "movement_history": navigator.movement_history(),
         "simplified_history": navigator.simplified_history(),
         "return_route": navigator.return_route(),
-        
         "locked_object_class": navigator.locked_object_class,
         "locked_destination": navigator.locked_destination,
         "locked_bin_color": navigator.locked_bin_color,
@@ -916,152 +874,11 @@ def navigation_status():
             else None
         ),
     }
-def start_system():
-    """
-    Start the physical robot hardware once.
-
-    Importing this Flask module does not call this function.
-    The real application entry point calls it explicitly.
-    """
-    global system_started
-    global processing_thread
-    global arduino_error
-
-    with system_start_lock:
-        if system_started:
-            return
-
-        if shutdown_complete:
-            raise RuntimeError(
-                "The robot system has already been shut down."
-            )
-
-        print("RobotProject startup started.")
-
-        camera.create_rgb()
-        camera.create_depth()
-        camera.start()
-
-        arduino_error = None
-
-        try:
-            arduino.connect()
-
-            if not arduino.ping():
-                raise RuntimeError(
-                    "Arduino did not respond to PING."
-                )
-
-        except Exception as error:
-            arduino_error = str(error)
-
-            print(
-                f"Arduino connection error: {error}"
-            )
-
-        processing_thread = threading.Thread(
-            target=camera_processing_loop,
-            daemon=True,
-        )
-
-        processing_thread.start()
-
-        atexit.register(shutdown_system)
-
-        if (
-            threading.current_thread()
-            is threading.main_thread()
-        ):
-            signal.signal(
-                signal.SIGINT,
-                handle_shutdown_signal,
-            )
-
-            signal.signal(
-                signal.SIGTERM,
-                handle_shutdown_signal,
-            )
-
-        system_started = True
-
-        print("RobotProject startup complete.")
-
-def shutdown_system():
-    """
-    Stop robot activity and release hardware resources.
-
-    The flag prevents cleanup from running twice through both
-    the signal handler and atexit.
-    """
-    global shutdown_complete
-
-    with shutdown_lock:
-        if shutdown_complete:
-            return
-
-        shutdown_complete = True
-
-    print("RobotProject shutdown started.")
-
-    # Stop navigation and robot movement first.
-    try:
-        navigator.stop()
-    except Exception as error:
-        print(
-            f"Navigation shutdown warning: {error}"
-        )
-
-    # Stop the OAK-D pipeline so queue reads can exit.
-    try:
-        camera.close()
-    except Exception as error:
-        print(
-            f"Camera shutdown warning: {error}"
-        )
-
-    # Allow the navigation thread to stop before closing
-    # the Arduino serial connection.
-    navigation_thread = navigator.navigation_thread
-
-    if (
-        navigation_thread is not None
-        and navigation_thread.is_alive()
-        and navigation_thread
-        is not threading.current_thread()
-    ):
-        navigation_thread.join(timeout=5.0)
-    
-    # Allow the camera-processing thread to finish.
-    if (
-        processing_thread is not None
-        and processing_thread.is_alive()
-        and processing_thread
-        is not threading.current_thread()
-    ):
-        processing_thread.join(timeout=3.0)
-
-    # Send one final motor stop before closing serial.
-    try:
-        arduino.stop()
-    except Exception as error:
-        print(
-            f"Arduino STOP warning: {error}"
-        )
-
-    try:
-        arduino.close()
-    except Exception as error:
-        print(
-            f"Arduino close warning: {error}"
-        )
-
-    print("RobotProject shutdown complete.")
 
 
-def handle_shutdown_signal(
-    signal_number,
-    current_frame,
-):
-    shutdown_system()
-    raise SystemExit(0)
+processing_thread = threading.Thread(
+    target=camera_processing_loop,
+    daemon=True,
+)
 
+processing_thread.start()

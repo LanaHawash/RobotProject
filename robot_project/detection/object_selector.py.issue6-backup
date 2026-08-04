@@ -4,7 +4,6 @@ from typing import Optional
 
 @dataclass
 class SelectedTarget:
-   
     label: str
     average_confidence: float
     average_distance_mm: int
@@ -39,7 +38,6 @@ class ObjectSelector:
 
         self.maximum_center_shift = maximum_center_shift
 
-        
         self.candidate_label = None
         self.candidate_center_x = None
         self.candidate_center_y = None
@@ -50,7 +48,6 @@ class ObjectSelector:
         self.confirmed_target: Optional[SelectedTarget] = None
 
     def reset_candidate(self):
-        self.candidate_track_id = None
         self.candidate_label = None
         self.candidate_center_x = None
         self.candidate_center_y = None
@@ -71,17 +68,14 @@ class ObjectSelector:
 
         center_x, center_y = detection["center"]
 
-        horizontal_shift = abs(
-            center_x - self.candidate_center_x
-        )
-        vertical_shift = abs(
-            center_y - self.candidate_center_y
-        )
+        horizontal_shift = abs(center_x - self.candidate_center_x)
+        vertical_shift = abs(center_y - self.candidate_center_y)
 
         return (
             horizontal_shift <= self.maximum_center_shift
             and vertical_shift <= self.maximum_center_shift
         )
+
     def _choose_closest_valid_detection(self, detections):
         """
         Choose the visible detection occupying the largest image area.
@@ -115,7 +109,7 @@ class ObjectSelector:
 
     def _start_new_candidate(self, detection):
         center_x, center_y = detection["center"]
-        
+
         self.candidate_label = detection["class"]
         self.candidate_center_x = center_x
         self.candidate_center_y = center_y
@@ -133,7 +127,7 @@ class ObjectSelector:
 
     def _update_candidate(self, detection):
         center_x, center_y = detection["center"]
-        
+
         self.candidate_center_x = center_x
         self.candidate_center_y = center_y
 
@@ -168,12 +162,7 @@ class ObjectSelector:
             self._start_new_candidate(closest)
             self.confirmed_target = None
 
-        # Navigation cannot safely lock an object until
-        # ByteTrack has assigned it a stable identity.
-    
-        
         average_confidence = (
-            
             sum(self.confidence_history)
             / len(self.confidence_history)
         )
@@ -198,7 +187,6 @@ class ObjectSelector:
             return None
 
         self.confirmed_target = SelectedTarget(
-            
             label=self.candidate_label,
             average_confidence=average_confidence,
             average_distance_mm=average_distance,
@@ -234,7 +222,6 @@ class ObjectSelector:
         )
 
         return {
-            
             "label": self.candidate_label,
             "frames_seen": len(self.confidence_history),
             "average_confidence": round(average_confidence, 3),

@@ -22,6 +22,7 @@ DESTINATION_BIN_COLORS = {
     "animal": "yellow",
     "toy_car": "red",
     "building_block": "blue",
+    "discharge": "black",
 }
 
 BIN_COLOR_HSV_RANGES = {
@@ -32,6 +33,13 @@ BIN_COLOR_HSV_RANGES = {
     "blue": {
         "lower": (90, 80, 70),
         "upper": (135, 255, 255),
+    },
+
+    "black": {
+        # Black has no reliable hue. Detect it using its low
+        # brightness value instead.
+        "lower": (0, 0, 0),
+        "upper": (179, 255, 60),
     },
 }
 

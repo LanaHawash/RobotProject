@@ -144,6 +144,26 @@ float gyroZBias = 0.0;
 bool continuousForwardActive = false;
 unsigned long continuousForwardLastRefreshMs = 0;
 
+// Special result returned only when an exact STOP
+// command interrupts an IMU turn.
+const float TURN_ABORTED_BY_STOP = -2.0;
+
+
+
+
+
+
+// Function declarations.
+bool emergencyStopRequested();
+
+bool waitWithEmergencyStop(
+  unsigned long durationMs
+);
+
+
+
+
+
 // ==================================================
 // MOTOR FUNCTIONS
 // ==================================================
@@ -391,43 +411,83 @@ void grabObject()
   stopMotors();
 
   Serial.println(
-      "COMMAND_STARTED,GRAB_OBJECT"
+    F("COMMAND_STARTED,GRAB_OBJECT")
   );
 
-  // Confirm the arm begins with the gripper open.
+  // Open the gripper.
   setServoAngle(
-      GRIPPER_CHANNEL,
-      START_GRIPPER_ANGLE
+    GRIPPER_CHANNEL,
+    START_GRIPPER_ANGLE
   );
 
-  delay(500);
+  if (!waitWithEmergencyStop(500))
+  {
+    Serial.println(
+      F(
+        "COMMAND_ABORTED,GRAB_OBJECT,"
+        "REASON=STOP"
+      )
+    );
+
+    return;
+  }
 
   // Reach toward the object.
   setServoAngle(
-      BASE_CHANNEL,
-      CATCH_BASE_ANGLE
+    BASE_CHANNEL,
+    CATCH_BASE_ANGLE
   );
 
-  delay(1500);
+  if (!waitWithEmergencyStop(1500))
+  {
+    Serial.println(
+      F(
+        "COMMAND_ABORTED,GRAB_OBJECT,"
+        "REASON=STOP"
+      )
+    );
+
+    return;
+  }
 
   // Close the gripper.
   setServoAngle(
-      GRIPPER_CHANNEL,
-      CATCH_GRIPPER_ANGLE
+    GRIPPER_CHANNEL,
+    CATCH_GRIPPER_ANGLE
   );
 
-  delay(1500);
+  if (!waitWithEmergencyStop(1500))
+  {
+    Serial.println(
+      F(
+        "COMMAND_ABORTED,GRAB_OBJECT,"
+        "REASON=STOP"
+      )
+    );
 
-  // Lift the object while keeping it held.
+    return;
+  }
+
+  // Lift the object.
   setServoAngle(
-      BASE_CHANNEL,
-      LIFT_BASE_ANGLE
+    BASE_CHANNEL,
+    LIFT_BASE_ANGLE
   );
 
-  delay(1500);
+  if (!waitWithEmergencyStop(1500))
+  {
+    Serial.println(
+      F(
+        "COMMAND_ABORTED,GRAB_OBJECT,"
+        "REASON=STOP"
+      )
+    );
+
+    return;
+  }
 
   Serial.println(
-      "COMMAND_DONE,GRAB_OBJECT"
+    F("COMMAND_DONE,GRAB_OBJECT")
   );
 }
 
@@ -437,27 +497,45 @@ void releaseObject()
   stopMotors();
 
   Serial.println(
-      "COMMAND_STARTED,RELEASE_OBJECT"
+    F("COMMAND_STARTED,RELEASE_OBJECT")
   );
 
-  // Ensure the arm is in the carrying position.
   setServoAngle(
-      BASE_CHANNEL,
-      RELEASE_BASE_ANGLE
+    BASE_CHANNEL,
+    RELEASE_BASE_ANGLE
   );
 
-  delay(700);
+  if (!waitWithEmergencyStop(700))
+  {
+    Serial.println(
+      F(
+        "COMMAND_ABORTED,RELEASE_OBJECT,"
+        "REASON=STOP"
+      )
+    );
 
-  // Open the gripper over the bin.
+    return;
+  }
+
   setServoAngle(
-      GRIPPER_CHANNEL,
-      RELEASE_GRIPPER_ANGLE
+    GRIPPER_CHANNEL,
+    RELEASE_GRIPPER_ANGLE
   );
 
-  delay(1500);
+  if (!waitWithEmergencyStop(1500))
+  {
+    Serial.println(
+      F(
+        "COMMAND_ABORTED,RELEASE_OBJECT,"
+        "REASON=STOP"
+      )
+    );
+
+    return;
+  }
 
   Serial.println(
-      "COMMAND_DONE,RELEASE_OBJECT"
+    F("COMMAND_DONE,RELEASE_OBJECT")
   );
 }
 // ==================================================
@@ -556,18 +634,57 @@ bool emergencyStopRequested()
 
   incoming.trim();
 
+  // Only the exact command STOP interrupts
+  // the currently active operation.
   if (incoming == "STOP")
   {
     stopMotors();
+
+    continuousForwardActive = false;
+    continuousForwardLastRefreshMs = 0;
+
     Serial.println(F("STOPPED"));
+
     return true;
   }
 
-  Serial.print(F("ERROR,BUSY_POSITIONING,"));
+  // Another command arrived while Arduino was busy.
+  // Reject that command, but do not stop the current
+  // operation.
+  Serial.print(
+    F("ERROR,BUSY_COMMAND,")
+  );
   Serial.println(incoming);
 
   return false;
 }
+
+bool waitWithEmergencyStop(
+  unsigned long durationMs
+)
+{
+  unsigned long startMillis = millis();
+
+  while (
+    millis() - startMillis < durationMs
+  )
+  {
+    if (emergencyStopRequested())
+    {
+      return false;
+    }
+
+    delay(2);
+  }
+
+  return true;
+}
+
+
+
+
+
+
 
 bool runPickupPulse(
   bool forward,
@@ -638,6 +755,13 @@ bool confirmPickupTarget()
   {
     if (emergencyStopRequested())
     {
+      Serial.println(
+        F(
+          "COMMAND_ABORTED,POSITION_FOR_PICKUP,"
+          "REASON=STOP"
+        )
+      );
+
       return false;
     }
 
@@ -1006,8 +1130,10 @@ void positionForPickup()
 
 void reportFilteredDistance()
 {
-  stopMotors();
-
+  // Reading distance must not change the current motor state.
+  //
+  // If the robot is moving continuously, it remains moving.
+  // If the robot is already stopped, it remains stopped.
   float distanceCM =
       readFilteredDistanceCM();
 
@@ -1051,7 +1177,9 @@ void printImuReadings()
   Serial.println(gz);
 }
 
-void calibrateGyro()
+bool calibrateGyro(
+  bool allowEmergencyStop
+)
 {
   const int sampleCount = 500;
   int32_t totalGz = 0;
@@ -1061,10 +1189,50 @@ void calibrateGyro()
   Serial.println(F("CALIBRATING_IMU"));
   Serial.println(F("KEEP_ROBOT_STILL"));
 
-  delay(1000);
-
-  for (int i = 0; i < sampleCount; i++)
+  if (allowEmergencyStop)
   {
+    if (
+      !waitWithEmergencyStop(1000)
+    )
+    {
+      Serial.println(
+        F(
+          "COMMAND_ABORTED,CALIBRATE_IMU,"
+          "REASON=STOP"
+        )
+      );
+
+      return false;
+    }
+  }
+  else
+  {
+    // During Arduino startup, the Raspberry Pi is
+    // still waiting for ARDUINO_READY.
+    delay(1000);
+  }
+
+  for (
+    int i = 0;
+    i < sampleCount;
+    i++
+  )
+  {
+    if (
+      allowEmergencyStop &&
+      emergencyStopRequested()
+    )
+    {
+      Serial.println(
+        F(
+          "COMMAND_ABORTED,CALIBRATE_IMU,"
+          "REASON=STOP"
+        )
+      );
+
+      return false;
+    }
+
     mpu.getRotation(
       &gx,
       &gy,
@@ -1083,7 +1251,11 @@ void calibrateGyro()
   Serial.print(F("GYRO_Z_BIAS="));
   Serial.println(gyroZBias, 2);
 
-  Serial.println(F("IMU_CALIBRATION_DONE"));
+  Serial.println(
+    F("IMU_CALIBRATION_DONE")
+  );
+
+  return true;
 }
 
 // ==================================================
@@ -1100,15 +1272,22 @@ void runTimedMovement(
     durationMs > MAX_DRIVE_TIME_MS
   )
   {
-    Serial.println(F("ERROR,INVALID_DURATION"));
+    Serial.println(
+      F("ERROR,INVALID_DURATION")
+    );
+
     return;
   }
 
   if (forward)
   {
     Serial.print(
-      F("COMMAND_STARTED,FORWARD,DURATION_MS=")
+      F(
+        "COMMAND_STARTED,FORWARD,"
+        "DURATION_MS="
+      )
     );
+
     Serial.println(durationMs);
 
     moveForward();
@@ -1116,31 +1295,82 @@ void runTimedMovement(
   else
   {
     Serial.print(
-      F("COMMAND_STARTED,BACKWARD,DURATION_MS=")
+      F(
+        "COMMAND_STARTED,BACKWARD,"
+        "DURATION_MS="
+      )
     );
+
     Serial.println(durationMs);
 
     moveBackward();
   }
 
-  delay(durationMs);
+  unsigned long startMillis = millis();
+
+  while (
+    millis() - startMillis < durationMs
+  )
+  {
+    if (emergencyStopRequested())
+    {
+      unsigned long actualDurationMs =
+          millis() - startMillis;
+
+      stopMotors();
+
+      if (forward)
+      {
+        Serial.print(
+          F(
+            "COMMAND_ABORTED,FORWARD,"
+            "REASON=STOP,DURATION_MS="
+          )
+        );
+      }
+      else
+      {
+        Serial.print(
+          F(
+            "COMMAND_ABORTED,BACKWARD,"
+            "REASON=STOP,DURATION_MS="
+          )
+        );
+      }
+
+      Serial.println(actualDurationMs);
+
+      return;
+    }
+
+    delay(2);
+  }
+
+  unsigned long actualDurationMs =
+      millis() - startMillis;
 
   stopMotors();
 
   if (forward)
   {
     Serial.print(
-      F("COMMAND_DONE,FORWARD,DURATION_MS=")
+      F(
+        "COMMAND_DONE,FORWARD,"
+        "DURATION_MS="
+      )
     );
   }
   else
   {
     Serial.print(
-      F("COMMAND_DONE,BACKWARD,DURATION_MS=")
+      F(
+        "COMMAND_DONE,BACKWARD,"
+        "DURATION_MS="
+      )
     );
   }
 
-  Serial.println(durationMs);
+  Serial.println(actualDurationMs);
 }
 
 // ==================================================
@@ -1203,8 +1433,15 @@ float turnByAngle(
   unsigned long previousMicros = micros();
   unsigned long previousPrintMillis = 0;
 
-  while (progressAngle < targetAngle)
+    while (progressAngle < targetAngle)
   {
+    if (emergencyStopRequested())
+    {
+      stopMotors();
+
+      return TURN_ABORTED_BY_STOP;
+    }
+
     unsigned long currentMicros = micros();
     unsigned long elapsedMillis =
         millis() - turnStartMillis;
@@ -1401,7 +1638,7 @@ void processCommand(String command)
 
   if (command == "CALIBRATE_IMU")
   {
-    calibrateGyro();
+    calibrateGyro(true);
     return;
   }
 
@@ -1454,7 +1691,19 @@ void processCommand(String command)
           requestedAngle
         );
 
-    if (actualAngle >= 0.0)
+    if (
+      actualAngle ==
+      TURN_ABORTED_BY_STOP
+    )
+    {
+      Serial.println(
+        F(
+          "COMMAND_ABORTED,TURN_RIGHT,"
+          "REASON=STOP"
+        )
+      );
+    }
+    else if (actualAngle >= 0.0)
     {
       Serial.print(
         F(
@@ -1462,6 +1711,7 @@ void processCommand(String command)
           "FINAL_ANGLE="
         )
       );
+
       Serial.println(actualAngle, 2);
     }
 
@@ -1479,7 +1729,19 @@ void processCommand(String command)
           requestedAngle
         );
 
-    if (actualAngle >= 0.0)
+    if (
+      actualAngle ==
+      TURN_ABORTED_BY_STOP
+    )
+    {
+      Serial.println(
+        F(
+          "COMMAND_ABORTED,TURN_LEFT,"
+          "REASON=STOP"
+        )
+      );
+    }
+    else if (actualAngle >= 0.0)
     {
       Serial.print(
         F(
@@ -1487,6 +1749,7 @@ void processCommand(String command)
           "FINAL_ANGLE="
         )
       );
+
       Serial.println(actualAngle, 2);
     }
 
@@ -1544,7 +1807,7 @@ void setup()
 
   printImuReadings();
 
-  calibrateGyro();
+  calibrateGyro(false);
   pwm.begin();
   pwm.setPWMFreq(50);
 

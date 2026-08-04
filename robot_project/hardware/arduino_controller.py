@@ -88,7 +88,9 @@ class ArduinoController:
             )
 
         with self.write_lock:
-            print(f"Raspberry Pi -> Arduino: {command}")
+            print(
+                f"Raspberry Pi -> Arduino: {command}"
+            )
 
             self.connection.write(
                 f"{command}\n".encode("utf-8")
@@ -119,7 +121,18 @@ class ArduinoController:
                 if not line:
                     continue
 
-                print(f"Arduino -> Raspberry Pi: {line}")
+                print(
+                    "Arduino -> Raspberry Pi: "
+                    f"{line}"
+                )
+
+                if line == "STOPPED":
+                    continue
+
+                if line.startswith(
+                    "COMMAND_ABORTED,"
+                ):
+                    raise RuntimeError(line)
 
                 if line.startswith("ERROR,"):
                     raise RuntimeError(line)
@@ -128,7 +141,7 @@ class ArduinoController:
                     return line
 
             raise TimeoutError(
-                f"Timed out waiting for: "
+                "Timed out waiting for: "
                 f"{expected_prefix}"
             )
 
@@ -280,10 +293,11 @@ class ArduinoController:
 
     def read_distance_cm(self) -> Optional[float]:
         """
-        Read one filtered ultrasonic distance while the robot is
-        stopped.
+        Read one filtered ultrasonic distance without changing the
+        Arduino's current motor state.
 
-        Returns None when Arduino reports no valid echo.
+        The robot may be stopped or moving continuously. Returns
+        None when Arduino reports no valid echo.
         """
         if not self.is_connected():
             raise RuntimeError(
@@ -453,13 +467,12 @@ class ArduinoController:
                         raise RuntimeError(line)
 
                     if line == "STOPPED":
-                        return {
-                            "success": False,
-                            "reason": "STOP",
-                            "distance_cm":
-                                final_distance_cm,
-                            "pulses": pulses,
-                        }
+                        # This is the immediate STOP
+                        # acknowledgement. Arduino sends
+                        # COMMAND_ABORTED immediately after
+                        # it, which contains the terminal
+                        # result for positioning.
+                        continue
 
                 raise TimeoutError(
                     "Timed out waiting for pickup "
@@ -479,7 +492,9 @@ class ArduinoController:
     def release_object(self) -> None:
         self._send_and_wait(
             command="RELEASE_OBJECT",
-            expected_prefix="COMMAND_DONE,RELEASE_OBJECT",
+            expected_prefix=(
+                "COMMAND_DONE,RELEASE_OBJECT"
+            ),
             timeout_seconds=5.0,
         )
 
@@ -487,25 +502,46 @@ class ArduinoController:
         if not self.is_connected():
             return
 
-        # POSITION_FOR_PICKUP reads serial while holding the command
-        # lock. Send STOP directly so Arduino can abort immediately.
-        if self.positioning_active.is_set():
-            try:
-                self._write_command("STOP")
-            except Exception as error:
-                print(
-                    f"Arduino STOP warning: {error}"
-                )
+        acquired_command_lock = (
+            self.command_lock.acquire(
+                blocking=False
+            )
+        )
+
+        if not acquired_command_lock:
+            self._write_command("STOP")
             return
 
         try:
-            self._send_and_wait(
-                command="STOP",
-                expected_prefix="STOPPED",
-                timeout_seconds=2,
+            self._write_command("STOP")
+
+            deadline = time.monotonic() + 2.0
+
+            while time.monotonic() < deadline:
+                line = self._read_line()
+
+                if not line:
+                    continue
+
+                print(
+                    "Arduino -> Raspberry Pi: "
+                    f"{line}"
+                )
+
+                if line == "STOPPED":
+                    return
+
+                if line.startswith("ERROR,"):
+                    raise RuntimeError(line)
+
+            raise TimeoutError(
+                "Timed out waiting for STOPPED."
             )
-        except Exception as error:
-            print(f"Arduino STOP warning: {error}")
+
+        finally:
+            self.command_lock.release()
+
+    
 
     def close(self) -> None:
         if self.connection is None:

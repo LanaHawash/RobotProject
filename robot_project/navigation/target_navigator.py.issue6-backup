@@ -128,7 +128,6 @@ class TargetNavigator:
         self.status = "IDLE"
         self.last_action = None
         self.error = None
-        
         self.locked_object_class = None
         self.locked_destination = None
         self.locked_bin_color = None
@@ -152,9 +151,7 @@ class TargetNavigator:
         
     def start(self, selected_target: dict) -> None:
         if self.is_running():
-            raise RuntimeError(
-                "Navigation is already running."
-            )
+            return
 
         self._lock_selected_target(selected_target)
 
@@ -292,9 +289,7 @@ class TargetNavigator:
                 "The confirmed target has no class or destination."
             )
 
-        bin_color = DESTINATION_BIN_COLORS.get(
-            destination
-        )
+        bin_color = DESTINATION_BIN_COLORS.get(destination)
 
         if bin_color is None:
             raise RuntimeError(
@@ -312,6 +307,8 @@ class TargetNavigator:
             f"destination={self.locked_destination}, "
             f"bin_color={self.locked_bin_color}"
         )
+  
+
     def _prepare_next_automatic_cycle(self) -> None:
         """
         Move away from the bin, face the object-search environment,
@@ -444,8 +441,6 @@ class TargetNavigator:
         try:
             while not self.stop_event.is_set():
                 target = self.get_target()
-
-                
 
                 if target is None:
                     # Capture the alignment state only when the
@@ -930,7 +925,6 @@ class TargetNavigator:
         self.last_forward_refresh_time = 0.0
         self.continuous_forward_start_time = None
 
-   
     def _parse_target(
         self,
         target: dict,

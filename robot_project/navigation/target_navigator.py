@@ -81,6 +81,14 @@ class TargetNavigator:
     BIN_CENTER_TOLERANCE_PX = 45
     REQUIRED_BIN_CENTERED_UPDATES = 3
 
+    # Once the bin's color blob is at least this large, the robot is
+    # close enough that even the smallest turn sweeps it across many
+    # more pixels than the same turn would from a distance. Without
+    # this, alignment keeps overshooting the tolerance band and
+    # times out even though the bin is plainly in front of it.
+    BIN_CLOSE_RANGE_AREA_PX = 35000
+    BIN_CLOSE_RANGE_TOLERANCE_PX = 70
+
     BIN_ALIGNMENT_TURN_DEGREES = 3
     BIN_ALIGNMENT_DELAY_SECONDS = 0.25
     MAX_BIN_ALIGNMENT_UPDATES = 120
@@ -1549,9 +1557,23 @@ class TargetNavigator:
                 - self.FRAME_CENTER_X
             )
 
+            # A large color blob means the bin is already close, so
+            # the same turn angle sweeps it across far more pixels
+            # than it would from a distance.
+            is_close_range = (
+                detection["area"]
+                >= self.BIN_CLOSE_RANGE_AREA_PX
+            )
+
+            alignment_tolerance_px = (
+                self.BIN_CLOSE_RANGE_TOLERANCE_PX
+                if is_close_range
+                else self.BIN_CENTER_TOLERANCE_PX
+            )
+
             if (
                 abs(horizontal_error)
-                <= self.BIN_CENTER_TOLERANCE_PX
+                <= alignment_tolerance_px
             ):
                 centered_updates += 1
 
@@ -1593,7 +1615,11 @@ class TargetNavigator:
 
             # Use large corrections when far away and small corrections
             # when close to the center to reduce left-right oscillation.
-            if absolute_error > 180:
+            # At close range, always use the smallest step regardless
+            # of pixel error, since proximity already amplifies it.
+            if is_close_range:
+                turn_degrees = 1
+            elif absolute_error > 180:
                 turn_degrees = 3
             elif absolute_error > 100:
                 turn_degrees = 2
@@ -1804,20 +1830,51 @@ class TargetNavigator:
 
                 return distance_cm
 
-            # Start moving or refresh the Arduino forward watchdog.
-            self._maintain_continuous_forward(
+            if distance_cm > self.BIN_FAR_DISTANCE_CM:
+                # Far from the bin: smooth continuous forward is
+                # safe here, same as the far-range object approach.
+                self._maintain_continuous_forward(
+                    distance_cm
+                )
+
+                self.status = "APPROACHING_BIN_CONTINUOUSLY"
+                self.last_action = (
+                    "APPROACH_BIN_CONTINUOUS "
+                    f"DISTANCE_CM={distance_cm:.1f} "
+                    f"ERROR_PX={horizontal_error}"
+                )
+
+                time.sleep(
+                    self.BIN_APPROACH_DELAY_SECONDS
+                )
+                continue
+
+            # Close enough that continuous full-speed driving could
+            # cover the remaining gap to BIN_EMERGENCY_DISTANCE_CM
+            # between two ultrasonic reads. Stop and creep in with
+            # short pulses instead, re-checking distance after each
+            # one, the same way pickup positioning does for objects.
+            self._stop_continuous_forward()
+
+            pulse_ms = self._bin_approach_duration(
                 distance_cm
             )
 
-            self.status = "APPROACHING_BIN_CONTINUOUSLY"
+            self.status = "APPROACHING_BIN_CONTROLLED"
             self.last_action = (
-                "APPROACH_BIN_CONTINUOUS "
-                f"DISTANCE_CM={distance_cm:.1f} "
-                f"ERROR_PX={horizontal_error}"
+                "APPROACH_BIN_PULSE "
+                f"{pulse_ms} "
+                f"DISTANCE_CM={distance_cm:.1f}"
             )
 
-            time.sleep(
-                self.BIN_APPROACH_DELAY_SECONDS
+            actual_duration = self.arduino.forward(
+                pulse_ms
+            )
+
+            self.history.record_linear(
+                command="FORWARD",
+                duration_ms=actual_duration,
+                source="BIN_APPROACH",
             )
 
         self._stop_continuous_forward()

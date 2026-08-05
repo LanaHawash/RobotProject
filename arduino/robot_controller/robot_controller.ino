@@ -103,7 +103,7 @@ const int SHOULDER_MAX_ANGLE = 180;
 const int ELBOW_MIN_ANGLE = 10;
 const int ELBOW_MAX_ANGLE = 130;
 
-const int GRIPPER_MIN_ANGLE = 95;
+const int GRIPPER_MIN_ANGLE = 100;
 const int GRIPPER_MAX_ANGLE = 170;
 
 // Starting pose
@@ -116,13 +116,13 @@ const int START_GRIPPER_ANGLE = 160;
 const int CATCH_BASE_ANGLE = 50;
 const int CATCH_SHOULDER_ANGLE = 140;
 const int CATCH_ELBOW_ANGLE = 30;
-const int CATCH_GRIPPER_ANGLE = 100;
+const int CATCH_GRIPPER_ANGLE = 115;
 
 // Lifting/carrying pose
 const int LIFT_BASE_ANGLE = 100;
 const int LIFT_SHOULDER_ANGLE = 140;
 const int LIFT_ELBOW_ANGLE = 30;
-const int LIFT_GRIPPER_ANGLE = 100;
+const int LIFT_GRIPPER_ANGLE = 115;
 
 // Release pose
 const int RELEASE_BASE_ANGLE = 100;

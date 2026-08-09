@@ -1,335 +1,313 @@
-# RobotProject
+# Toy-Sorting Mobile Robot
 
-RobotProject is an autonomous mobile sorting robot developed as a graduation project. The robot detects scattered toy objects, selects and approaches a target, positions itself for pickup, grabs the object with a robotic arm, returns to its starting position, and prepares to deliver the object to its assigned destination bin.
+An autonomous mobile robot that detects toy objects, selects and confirms a target, navigates to it, picks it up with a robotic arm, returns to its starting area, finds the assigned colored destination bin, releases the object, and automatically begins the next sorting cycle.
 
-The system combines an OAK-D depth camera, a Raspberry Pi 5, an Arduino Uno, an MPU-6050 IMU, an ultrasonic sensor, a four-wheel drive platform, and a servo-controlled robotic arm.
+The system combines a Raspberry Pi 5, a Luxonis OAK-D depth camera, an Arduino Uno, an MPU-6050 IMU, an ultrasonic sensor, a four-wheel drive chassis, and a PCA9685-controlled robotic arm.
 
-## Project Objectives
+## Current Implementation Status
 
-The complete robot is intended to:
+The current repository contains the complete software path for the autonomous sorting sequence:
 
-1. Detect and classify a toy object.
-2. Confirm that the same object remains visible across multiple frames.
-3. Save and lock the object's assigned destination.
-4. Align with and approach the selected object.
-5. Stop at a safe pickup distance.
-6. Pick up and continue holding the object.
-7. Return to the starting position using recorded movement history.
-8. Turn toward the destination-bin area.
-9. Find and approach the correct bin.
-10. Release the object only after reaching that bin.
-11. Move away from the bin, reset its cycle state, and repeat.
+1. Capture synchronized RGB and stereo-depth frames.
+2. Detect toy objects with a custom Ultralytics YOLO model.
+3. Track detections with ByteTrack.
+4. Select the largest stable visible target.
+5. Confirm the target across multiple frames.
+6. Lock the object's class, destination, and destination-bin color.
+7. Align with and approach the object.
+8. Transfer final distance control from the camera to the ultrasonic sensor.
+9. Position the robot for pickup.
+10. Close the gripper and lift the object.
+11. Estimate the outbound pose from movement history.
+12. Return to the starting area.
+13. Turn toward the destination-bin area.
+14. Find and align with the locked colored bin.
+15. Approach the bin using camera alignment and ultrasonic distance.
+16. Release the object.
+17. Back away, turn toward the object-search area, recalibrate the IMU, and clear the completed cycle.
+18. Wait for the next confirmed target and repeat automatically.
 
-## Current Project Status
+A single navigation start can therefore continue into repeated sorting cycles. An unrecoverable safety or sensor error, confirmed target loss, or manual stop ends the active cycle and requires operator attention. Temporary far-range ultrasonic misses can be tolerated while camera guidance remains valid.
 
-The project currently implements the complete object-detection, object-approach, pickup, and return-home portion of the cycle.
+## Supported Object Classes and Destinations
 
-The robot can currently:
+| Detected class | Logical destination | Bin color |
+|---|---|---|
+| `animal` | `animal` | Yellow |
+| `toy_car` | `toy_car` | Red |
+| `building_block` | `building_block` | Blue |
+| Low-confidence confirmed target | `discharge` | Black |
 
-- Stream RGB and stereo-depth data from the OAK-D camera.
-- Detect supported toy classes using a custom Ultralytics YOLO model.
-- Track detections between frames using ByteTrack.
-- Estimate object distance using aligned depth data.
-- Confirm a stable target over several consecutive frames.
-- Align the robot with the selected target.
-- Approach the target using camera guidance and ultrasonic measurements.
-- Perform final pickup positioning.
-- Close the robotic arm and hold the object.
-- Record outbound movement and turn history.
-- Calculate and execute a return route to the starting position.
-- Turn from the starting position to face the destination-bin area.
-- Expose live camera, detection, navigation, and hardware status through a Flask web interface.
-
-The current autonomous sequence is effectively:
-
-```text
-Detect target
-    -> confirm target
-    -> align with target
-    -> approach target
-    -> position for pickup
-    -> grab object
-    -> return to start
-    -> face destination bins
-```
-
-The robot does not yet navigate to the assigned destination bin. The existing release command must not be used immediately after the robot faces the bins.
-
-## Current Development Stage
-
-The current development priority is destination propagation and destination locking.
-
-The `ObjectSelector` already assigns a destination when it confirms a target. However, the live dictionary passed to `TargetNavigator` currently contains navigation measurements only:
-
-```python
-{
-    "label": ...,
-    "track_id": ...,
-    "confidence": ...,
-    "center_x": ...,
-    "center_y": ...,
-    "box_width": ...,
-    "box_height": ...,
-    "box_area": ...,
-    "box_occupancy": ...,
-}
-```
-
-It must also contain:
-
-```python
-"destination": ...
-```
-
-After the destination reaches `TargetNavigator`, the navigator must save and lock it before pickup begins. A later camera detection must not replace the destination of the object already being carried.
-
-The intended locked state is:
-
-```python
-self.carried_object_label = target["label"]
-self.destination_bin = target["destination"]
-self.destination_locked = True
-```
-
-This state must remain active through pickup, return-home movement, bin search, bin alignment, and bin approach. It should only be cleared after a successful release and final cycle reset.
-
-## Supported Toy Classes
-
-The custom YOLO model currently supports:
-
-- `toy_car`
-- `animal`
-- `building_block`
-
-The current object selector assigns the detected class as the normal destination. A low-confidence target that requires additional confirmation may be assigned to `discharge`.
-
-A future explicit mapping may use structures such as:
-
-```python
-DESTINATION_BINS = {
-    "animal": {
-        "destination": "animal_bin",
-        "color": "red",
-    },
-    "toy_car": {
-        "destination": "toy_car_bin",
-        "color": "blue",
-    },
-    "building_block": {
-        "destination": "building_block_bin",
-        "color": "green",
-    },
-}
-```
-
-The physical bin colors and HSV ranges must be calibrated using the real environment and lighting conditions.
+Normal targets must satisfy the standard confidence and confirmation requirements. A detection above the minimum threshold but below the normal confidence threshold requires additional confirmation frames and is routed to the black discharge bin.
 
 ## System Architecture
 
-The project uses a two-controller architecture.
-
-- The Raspberry Pi performs high-level perception, target selection, navigation decisions, movement-history processing, cycle control, and web-interface tasks.
-- The Arduino performs low-level motor, sensor, turning, and robotic-arm operations in response to serial commands.
-
-```text
-                           OAK-D Camera
-                    RGB frames + stereo depth
-                                  |
-                                  v
-                         Raspberry Pi 5
-        +--------------------------------------------------+
-        | Camera pipeline and frame synchronization         |
-        | YOLO object detection and ByteTrack tracking      |
-        | Depth estimation and target confirmation          |
-        | Camera-guided target alignment                    |
-        | Ultrasonic-assisted approach decisions            |
-        | Movement-history recording and return planning    |
-        | Destination state and sorting-cycle coordination  |
-        | Flask monitoring and control interface            |
-        +--------------------------------------------------+
-                                  |
-                         USB serial commands
-                                  |
-                                  v
-                            Arduino Uno
-        +--------------------------------------------------+
-        | Timed forward and backward movement               |
-        | Continuous-forward safety control                 |
-        | IMU-assisted left and right turns                 |
-        | Ultrasonic distance measurements                  |
-        | Pickup positioning sequence                       |
-        | Robotic-arm grab and release sequences            |
-        +--------------------------------------------------+
-                   |               |               |
-                   v               v               v
-              L298N driver     MPU-6050       PCA9685 driver
-                   |          + ultrasonic          |
-                   v                               v
-              Drive motors                    Robotic arm
+```mermaid
+flowchart TD
+    A[OAK-D RGB and stereo depth] --> B[CameraPipeline]
+    B --> C[YOLO detection and ByteTrack]
+    C --> D[Depth extraction and world objects]
+    D --> E[ObjectSelector]
+    E --> F[Confirmed target and destination]
+    F --> G[TargetNavigator]
+    B --> G
+    G --> H[MovementHistory]
+    G --> I[BinColorDetector]
+    G --> J[ArduinoController]
+    J --> K[Arduino Uno firmware]
+    K --> L[L298N and drive motors]
+    K --> M[MPU-6050 and ultrasonic sensor]
+    K --> N[PCA9685 and robotic arm]
+    B --> O[Flask web interface]
+    G --> O
+    J --> O
 ```
 
-## Software Architecture
+### Raspberry Pi Responsibilities
 
-### Camera Layer
+The Raspberry Pi performs high-level perception and behavior:
 
-`robot_project/camera/`
+- Creates and runs the OAK-D RGB and aligned stereo-depth pipeline.
+- Runs YOLO inference and ByteTrack tracking.
+- Extracts median depth near each detection center.
+- Maintains world-object information.
+- Confirms a stable target and assigns its destination.
+- Locks the carried object's class and destination-bin color.
+- Makes camera-guided alignment and approach decisions.
+- Records movement history and estimates the return pose.
+- Detects colored bins with HSV masks and contour filtering.
+- Coordinates pickup, return, delivery, release, reset, and repeated cycles.
+- Hosts the Flask monitoring and control interface.
 
-Responsible for:
+### Arduino Responsibilities
 
-- OAK-D device creation and configuration.
-- RGB and stereo-depth pipelines.
-- Frame-rate calculation.
-- Depth-frame processing and alignment.
+The Arduino performs direct hardware control:
 
-### Detection Layer
+- Controls the L298N motor-driver pins and PWM speeds.
+- Executes timed forward and backward movements.
+- Runs heartbeat-protected continuous forward movement.
+- Reads and filters ultrasonic distance measurements.
+- Reads and calibrates the MPU-6050 gyroscope.
+- Performs IMU-controlled turns with stall and timeout detection.
+- Controls the arm through the PCA9685 servo driver.
+- Executes pickup positioning, grab, lift, and release sequences.
+- Accepts an exact `STOP` command during interruptible operations.
+- Returns structured serial responses to the Raspberry Pi.
 
-`robot_project/detection/`
+## Perception and Target Selection
 
-Responsible for:
+### Camera Pipeline
 
-- Loading the custom YOLO model.
-- Running object detection and ByteTrack tracking.
-- Processing detection metadata.
-- Confirming a stable object over multiple frames.
-- Assigning the selected object's destination.
+The active runtime camera implementation is `robot_project/camera/pipeline.py`.
 
-Important files:
+It configures:
 
-- `yolo.py`: YOLO loading, inference, and tracking.
-- `detector.py`: detection and depth-related processing.
-- `object_selector.py`: target confirmation and destination assignment.
+- RGB video at `640 x 480`.
+- A target frame rate of `30 FPS`.
+- Left and right mono cameras for stereo depth.
+- Stereo depth aligned to the RGB stream.
+- Left-right consistency checking.
+- Subpixel disparity for improved depth precision.
 
-### Navigation Layer
+The smaller `depth.py` and `device.py` files are standalone helpers and are not the main application pipeline.
 
-`robot_project/navigation/`
+### Object Detection and Tracking
 
-Responsible for:
-
-- Reading the current camera-guided navigation target.
-- Aligning the robot with the object.
-- Managing continuous and timed forward movement.
-- Switching to ultrasonic control near the object.
-- Completing final pickup positioning.
-- Recording linear and rotational movement history.
-- Calculating the inverse return route.
-- Returning to the starting point.
-- Turning to face the destination-bin area.
-
-Important files:
-
-- `target_navigator.py`: current object navigation, pickup, return, and post-return sequence.
-- `movement_history.py`: movement recording, simplification, pose estimation, and inverse-route generation.
-
-Future navigation modules may separate bin navigation and full-cycle control from object navigation.
-
-### Hardware Layer
-
-`robot_project/hardware/`
-
-Responsible for:
-
-- Opening and maintaining the Raspberry Pi-to-Arduino serial connection.
-- Sending commands and validating Arduino responses.
-- Exposing high-level Python methods for movement, turning, distance measurement, pickup, and release.
-
-Important files:
-
-- `serial_controller.py`: base serial connection management.
-- `arduino_controller.py`: command-level Raspberry Pi interface.
-- `test_arduino_serial.py`: serial communication test.
-- `test_movement_imu.py`: movement and IMU test utilities.
-
-### Arduino Firmware
-
-`arduino/robot_controller/robot_controller.ino`
-
-Responsible for:
-
-- Controlling the L298N motor-driver inputs.
-- Executing timed movement commands.
-- Enforcing continuous-forward safety behavior.
-- Reading the ultrasonic sensor.
-- Reading and calibrating the MPU-6050.
-- Performing angle-controlled turns.
-- Controlling the robotic arm through the PCA9685.
-- Executing pickup-positioning, grab, and release sequences.
-
-### Web Layer
-
-`robot_project/web/`
-
-Responsible for:
-
-- Running the Flask application.
-- Processing frames continuously.
-- Publishing raw, annotated, and depth streams.
-- Maintaining shared detection and target state.
-- Providing navigation and Arduino control endpoints.
-- Displaying the robot's current status in the browser.
-
-The web layer currently creates `current_navigation_target` and passes it to `TargetNavigator` through `get_navigation_target()`.
-
-### World Layer
-
-`robot_project/world/`
-
-Contains object and world-state abstractions used to represent detected objects and manage scene information.
-
-## Data Flow
-
-The main runtime data flow is:
+`robot_project/detection/yolo.py` loads:
 
 ```text
-OAK-D frame
-    -> YOLO detection and ByteTrack tracking
-    -> depth and bounding-box measurements
-    -> ObjectSelector candidate update
-    -> confirmed target and assigned destination
-    -> current_navigation_target
-    -> TargetNavigator
-    -> ArduinoController command
-    -> Arduino firmware
-    -> motors, sensors, and robotic arm
+models/oak/best.pt
 ```
 
-The current architecture needs one correction in this flow:
+Inference uses Ultralytics YOLO tracking with the custom ByteTrack configuration:
 
 ```text
-confirmed destination
-    -> current_navigation_target["destination"]
-    -> TargetNavigator destination lock
+config/trackers/bytetrack_robot.yaml
 ```
 
-Without this correction, the navigator can steer toward the object but cannot preserve the destination required for the later sorting phase.
+`robot_project/detection/detector.py` converts model results into dictionaries containing:
+
+- Track ID.
+- Class label.
+- Confidence.
+- Bounding box.
+- Center coordinates.
+- Median aligned depth near the center of the object.
+
+### Target Confirmation
+
+`robot_project/detection/object_selector.py` selects the detection with the largest visible bounding-box area. It does not choose the object with the smallest depth value.
+
+The selected candidate must remain spatially consistent across consecutive frames. The current thresholds are:
+
+- Minimum usable confidence: `0.20`.
+- Normal confidence threshold: `0.40`.
+- Normal confirmation: `5` frames.
+- Uncertain-target confirmation: `8` frames.
+- Maximum center movement between confirmations: `80` pixels.
+
+Once confirmed, the selected target includes its label, average confidence, average distance, center position, destination, and confirmation-frame count.
+
+## Navigation and Sorting Cycle
+
+### Object Alignment and Approach
+
+`robot_project/navigation/target_navigator.py` uses horizontal image error to align the robot with the target. It performs small IMU-controlled turns until the object is centered, then drives forward while continuing to monitor:
+
+- Camera-target freshness.
+- Bounding-box position and occupancy.
+- Ultrasonic distance.
+- Target loss.
+- Misalignment.
+- Implausible distance changes.
+- Emergency distance limits.
+
+At close range, the navigator can continue with ultrasonic guidance even after the object moves below the camera, but only after the camera target was previously centered and the handoff conditions are valid.
+
+### Pickup
+
+The Arduino performs final pickup positioning around a configured target of `5 cm`, with filtered ultrasonic measurements and multiple stable readings. The firmware rejects:
+
+- Missing distance measurements.
+- Unstable initial measurements.
+- Sudden implausible jumps.
+- A target outside the allowed pickup-start range.
+- A target that becomes too close.
+- A target that is lost during positioning.
+
+After positioning, the arm opens, reaches toward the object, closes the gripper, and lifts the object into its carrying pose.
+
+### Return to Start
+
+All navigation turns and timed linear movements are recorded in `MovementHistory`.
+
+The current return implementation:
+
+1. Simplifies the outbound movement history.
+2. Estimates the robot's final planar position and heading.
+3. Calculates the bearing from that estimated position back to the origin.
+4. Turns toward the origin.
+5. Drives a calibrated estimated distance back.
+6. Turns to the configured bin-facing heading.
+
+This is dead reckoning, not exact reverse replay. Its accuracy depends on floor friction, wheel slip, battery voltage, motor consistency, and the configured distance-per-millisecond calibration.
+
+### Bin Detection and Delivery
+
+`robot_project/detection/bin_color_detector.py`:
+
+- Converts the RGB frame to HSV.
+- Applies the configured color mask.
+- Uses morphological opening and closing.
+- Finds the largest valid contour.
+- Returns its bounding box, center, width, height, and area.
+
+The navigator searches only for the bin color locked at the beginning of the cycle. It then aligns with that bin, approaches it with camera and ultrasonic checks, releases the object at the configured delivery distance, and begins the reset sequence.
+
+### Automatic Reset
+
+After a successful release, the robot:
+
+1. Moves backward from the bin.
+2. Turns `180 degrees` toward the object-search area.
+3. Stops.
+4. Recalibrates the IMU while stationary.
+5. Clears movement history and completed-cycle state.
+6. Clears the previous target lock.
+7. Waits for a new confirmed target.
+8. Starts the next cycle automatically.
+
+## Safety Behavior
+
+The project includes several software safety mechanisms:
+
+- An immediate Raspberry Pi stop path that is separate from normal blocking commands.
+- An exact Arduino `STOP` command that can interrupt timed movement, turning, pickup positioning, and arm wait periods.
+- A continuous-forward heartbeat; the Arduino stops the motors if refresh commands stop arriving.
+- Maximum movement durations and turn timeouts.
+- IMU turn-stall detection.
+- Camera-data freshness checks before navigation data is used.
+- Camera-target loss and misalignment checks.
+- Ultrasonic filtering, stability checks, range validation, and jump rejection.
+- Emergency minimum-distance stops during object and bin approach.
+- Servo angle constraints, including a gripper range of `95-170 degrees`.
+- Destination locking so later detections cannot redirect an object already being carried.
+
+Software checks do not replace safe electrical design or physical supervision. Keep the robot lifted from the floor during first movement tests, keep hands clear of the arm, and keep an accessible power-disconnect method.
 
 ## Hardware
 
-- Raspberry Pi 5
-- Luxonis OAK-D camera
-- Arduino Uno
-- L298N dual H-bridge motor driver
-- PCA9685 16-channel servo driver
-- MPU-6050 accelerometer and gyroscope
-- Ultrasonic distance sensor
-- Four DC TT motors
-- Four-wheel mobile chassis
-- Multi-servo robotic arm and gripper
-- Separate regulated power systems for computing, drive motors, and servos
+- Raspberry Pi 5.
+- Luxonis OAK-D depth camera.
+- Arduino Uno.
+- L298N dual H-bridge motor driver.
+- PCA9685 16-channel PWM servo driver.
+- MPU-6050 accelerometer and gyroscope.
+- Ultrasonic distance sensor.
+- Four DC TT motors and four-wheel chassis.
+- Multi-servo robotic arm and gripper.
+- Separate regulated power systems for computing, motors, and servos.
+
+### Arduino Pin Assignment
+
+| Function | Arduino pin |
+|---|---:|
+| L298N ENA | D6 |
+| L298N ENB | D5 |
+| L298N IN1 | D8 |
+| L298N IN2 | D9 |
+| L298N IN3 | D10 |
+| L298N IN4 | D11 |
+| Ultrasonic TRIG | D2 |
+| Ultrasonic ECHO | D3 |
+| I2C SDA | A4 on Arduino Uno |
+| I2C SCL | A5 on Arduino Uno |
+
+The MPU-6050 and PCA9685 share the I2C bus. They are distinguished by their I2C addresses.
+
+### PCA9685 Servo Channels
+
+| Joint | PCA9685 channel | Current software limits |
+|---|---:|---:|
+| Base | 0 | `0-180 degrees` |
+| Shoulder | 4 | `0-180 degrees` |
+| Elbow | 8 | `10-130 degrees` |
+| Gripper | 12 | `95-170 degrees` |
+
+Current gripper positions:
+
+- Hold/grab: `100 degrees`.
+- Open/release: `160 degrees`.
+
+Do not widen servo limits without testing the joint mechanically with the horn disconnected from the mechanism first.
+
+### Power Requirements
+
+- Power the Raspberry Pi from its own suitable supply or UPS.
+- Power the drive motors through the L298N motor supply.
+- Power the servo rail through the PCA9685 `V+` terminal using a regulated supply suitable for the servos.
+- Do not power the servo `V+` rail from the Arduino or Raspberry Pi 5 V pin.
+- Connect PCA9685 logic `VCC` to the controller's logic supply; `VCC` and `V+` serve different purposes.
+- Use a common ground between systems that exchange control signals.
+- Avoid connecting two independent regulated 5 V outputs directly together.
 
 ## Software Stack
 
-- Python 3
-- DepthAI
-- OpenCV
-- Flask
-- NumPy
-- Ultralytics YOLO
-- ByteTrack
-- PySerial
-- Arduino C++
-- Git and GitHub
+- Python 3.
+- DepthAI.
+- OpenCV.
+- NumPy.
+- Flask.
+- Ultralytics YOLO.
+- ByteTrack.
+- PySerial.
+- Arduino C++.
+- I2Cdev and MPU6050 Arduino libraries.
+- Adafruit PWM Servo Driver Arduino library.
 
-## Project Structure
+Dependency versions are pinned in `requirements.txt`.
+
+## Repository Structure
 
 ```text
 RobotProject/
@@ -341,6 +319,9 @@ RobotProject/
 ├── config/
 │   └── trackers/
 │       └── bytetrack_robot.yaml
+├── models/
+│   └── oak/
+│       └── best.pt
 ├── robot_project/
 │   ├── camera/
 │   │   ├── depth.py
@@ -348,6 +329,7 @@ RobotProject/
 │   │   ├── fps.py
 │   │   └── pipeline.py
 │   ├── detection/
+│   │   ├── bin_color_detector.py
 │   │   ├── detector.py
 │   │   ├── object_selector.py
 │   │   └── yolo.py
@@ -371,236 +353,242 @@ RobotProject/
 │   └── split_dataset.py
 ├── main.py
 ├── requirements.txt
-├── .gitignore
 └── README.md
 ```
 
-The trained model is expected at:
-
-```text
-models/oak/best.pt
-```
-
-Model weights may be excluded from Git because of their size.
-
-## Raspberry Pi and Arduino Responsibilities
-
-### Raspberry Pi
-
-The Raspberry Pi is responsible for decisions that require perception or application state:
-
-- Camera processing.
-- Object detection and tracking.
-- Target confirmation.
-- Destination assignment and locking.
-- Alignment decisions.
-- Approach-state transitions.
-- Movement-history storage.
-- Return-route calculation.
-- Sorting-cycle state management.
-- Web monitoring and manual controls.
-
-### Arduino
-
-The Arduino is responsible for deterministic hardware actions:
-
-- Motor pin control.
-- Timed movement execution.
-- IMU-based turns.
-- Ultrasonic measurements.
-- Servo positioning.
-- Pickup-positioning sequences.
-- Gripper closing and opening.
-- Motor safety stops and command acknowledgements.
-
-This separation keeps computer vision and high-level behavior on Linux while maintaining direct and predictable hardware control on the microcontroller.
-
-## Current Robot Workflow
-
-### Detection and Confirmation
-
-1. The OAK-D provides an RGB frame and aligned depth information.
-2. YOLO detects supported toy classes.
-3. ByteTrack preserves detection identities between frames.
-4. The selector chooses the closest valid detection.
-5. The same candidate must remain sufficiently stable for a configured number of frames.
-6. The selector creates a confirmed target and assigns its destination.
-
-### Object Navigation
-
-1. `TargetNavigator` reads the latest live target.
-2. It calculates horizontal error relative to the image center.
-3. It performs small IMU-controlled turns until the object is centered.
-4. It begins forward motion while continuing to monitor alignment.
-5. Near the object, it uses ultrasonic distance rather than camera depth for final approach control.
-6. It stops and starts the pickup-positioning sequence at the configured threshold.
-
-### Pickup and Return
-
-1. The Arduino completes the final physical pickup positioning.
-2. The arm closes and the object is held.
-3. The Raspberry Pi calculates the robot's estimated outbound pose from movement history.
-4. It generates and executes a return route.
-5. The robot stops at the starting area.
-6. The robot turns to face the destination bins.
-
-### Sorting Phase
-
-The sorting phase is the next major implementation area. It will require:
-
-1. Locked destination state in `TargetNavigator`.
-2. Destination-to-bin mapping.
-3. Colored-bin recognition using OpenCV HSV masks.
-4. Required-bin alignment.
-5. Ultrasonic-assisted bin approach.
-6. Release only after the state reaches `BIN_REACHED`.
-7. Back-away and 180-degree return-to-search behavior.
-8. Cycle-state clearing and IMU recalibration.
-9. Automatic repetition.
-
-## Development Roadmap
-
-### Stage 1: Destination Propagation and Locking
-
-Current stage.
-
-- Add `destination` to `current_navigation_target`.
-- Verify that `get_navigation_target()` returns it.
-- Add carried-object and destination state to `TargetNavigator`.
-- Save and lock the destination before pickup.
-- Verify that later camera updates cannot overwrite the locked destination.
-
-### Stage 2: Hold the Object After Facing the Bins
-
-- Remove the immediate release after `_face_bins()`.
-- Stop in a bin-search state.
-- Confirm physically that the gripper remains closed.
-- Preserve movement history and destination state.
-
-### Stage 3: Stationary Bin Detection
-
-- Add an HSV color detector for the physical bins.
-- Detect only the color required by the locked destination.
-- Validate contour area, center position, and stability.
-- Test this stage without moving the robot.
-
-### Stage 4: Bin Alignment
-
-- Add small left and right alignment corrections.
-- Require repeated centered detections before approaching.
-- Stop safely whenever the required bin is lost.
-
-### Stage 5: Bin Approach and Release
-
-- Use separate bin-approach calibration values.
-- Monitor ultrasonic distance while approaching.
-- Stop at the calibrated release distance.
-- Release only after confirming `BIN_REACHED`.
-
-### Stage 6: Cycle Completion
-
-- Move backward from the bin.
-- Turn 180 degrees toward the object-search area.
-- Clear movement history and selected-target state.
-- Clear carried-object and destination state.
-- Recalibrate the IMU while stationary.
-- Start the next sorting cycle automatically.
+Files whose names end in `.issue6-backup` are historical working copies and are not imported by the active runtime.
 
 ## Installation
 
-Clone the repository:
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/LanaHawash/RobotProject.git
 cd RobotProject
 ```
 
-Create and activate a virtual environment:
+### 2. Create a Python Environment
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-```
-
-Install the required packages:
-
-```bash
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Place the trained YOLO model at:
+### 3. Confirm the Model
+
+The trained YOLO model must exist at:
 
 ```text
 models/oak/best.pt
 ```
 
-## Running the Application
+### 4. Upload the Arduino Firmware
 
-Activate the virtual environment and start the application:
+Open and upload:
+
+```text
+arduino/robot_controller/robot_controller.ino
+```
+
+Required Arduino libraries:
+
+- `I2Cdev`.
+- `MPU6050`.
+- `Adafruit PWM Servo Driver Library`.
+
+The firmware uses:
+
+```text
+Baud rate: 115200
+Default Raspberry Pi port: /dev/ttyACM0
+```
+
+Keep the robot completely still during startup IMU calibration.
+
+### 5. Connect the Hardware
+
+Before running the application:
+
+- Connect the OAK-D camera to the Raspberry Pi.
+- Connect the Arduino to the Raspberry Pi by USB.
+- Confirm that the Arduino appears:
+
+```bash
+ls /dev/ttyACM*
+```
+
+- Confirm that the motor and servo power systems are correctly regulated.
+- Lift the drive wheels from the floor for the first test after any firmware or wiring change.
+
+### 6. Test Serial Communication
+
+```bash
+python robot_project/hardware/test_arduino_serial.py
+```
+
+The expected handshake is:
+
+```text
+ARDUINO_READY
+PONG
+```
+
+`test_movement_imu.py` currently expects a legacy `RUN_TEST` firmware command that is not implemented in the active `robot_controller.ino`. Do not use that script as a current end-to-end firmware test without updating one side of the interface.
+
+## Running the Robot
+
+From the repository root:
 
 ```bash
 source venv/bin/activate
 python main.py
 ```
 
-Open the Flask interface from a browser on the same network:
+The Flask application listens on:
 
 ```text
-http://<RASPBERRY_PI_IP>:5000
+0.0.0.0:5000
 ```
 
-## Arduino Setup
-
-Upload the main firmware from:
+Open the interface from a device on the same network:
 
 ```text
-arduino/robot_controller/robot_controller.ino
+http://<raspberry-pi-ip>:5000
 ```
 
-Connect the Arduino Uno to the Raspberry Pi through USB. The default serial settings in the project use:
+Recommended startup procedure:
+
+1. Place the robot at its defined starting position.
+2. Keep the robot still while the Arduino calibrates the IMU.
+3. Verify the camera stream and Arduino connection.
+4. Place supported objects in the search area.
+5. Place the red, yellow, blue, and black bins in the bin area.
+6. Wait until the web status reports a confirmed target.
+7. Start navigation.
+8. Observe the first full cycle with immediate access to the stop control.
+
+## Web Interface and Endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `/` | Main annotated detection and robot-control page |
+| `/video` | Annotated camera stream |
+| `/depth` | Depth visualization stream |
+| `/capture` | Dataset image-capture page |
+| `/capture_video` | Raw camera stream for capture |
+| `/save` | Save the current raw frame |
+| `/status` | Combined camera, detection, Arduino, and navigation status |
+| `/navigation/start` | Start the cycle using the current confirmed target |
+| `/navigation/stop` | Stop the active navigation cycle |
+| `/navigation/return` | Manually start return-to-origin behavior when allowed |
+| `/navigation/status` | Detailed navigator state and movement history |
+
+Captured web images are saved in:
 
 ```text
-Port: /dev/ttyACM0
-Baud rate: 115200
+dataset/images/raw/
 ```
 
-Confirm that the device exists:
+## Configuration and Calibration
 
-```bash
-ls /dev/ttyACM*
+### Main Configuration
+
+Edit `robot_project/config.py` to change:
+
+- Camera width, height, and frame rate.
+- YOLO model path.
+- Web host and port.
+- Object-to-bin color mapping.
+- HSV ranges for red, yellow, blue, and black bins.
+- Minimum accepted bin contour area.
+
+Red uses two HSV hue ranges because red wraps around the ends of the OpenCV hue scale.
+
+### Navigation Calibration
+
+Important values are defined near the top of `robot_project/navigation/target_navigator.py`, including:
+
+- Camera-center and alignment tolerances.
+- Object distance zones.
+- Forward pulse durations.
+- Camera-loss and handoff limits.
+- Bin alignment and approach thresholds.
+- Release distance.
+- Return distance calibration.
+- Post-release backward duration.
+
+`CM_PER_MS` is currently a physical calibration value, not a universal constant. Re-measure it whenever the floor, battery condition, motor speed, wheel diameter, or robot mass changes.
+
+### Arduino Calibration
+
+Important values are defined near the top of `arduino/robot_controller/robot_controller.ino`, including:
+
+- Drive and turn PWM speeds.
+- Turn acceptance and stall thresholds.
+- Pickup distance and tolerance.
+- Ultrasonic validation limits.
+- PCA9685 pulse range.
+- Servo mechanical limits.
+- Start, catch, lift, and release poses.
+
+Test one subsystem at a time after changing these values.
+
+### Bin-Color Calibration
+
+HSV values are sensitive to:
+
+- Lighting intensity and color temperature.
+- Shadows and reflections.
+- Bin material.
+- Camera exposure.
+- Distance from the bin.
+
+Use the camera under the actual operating lighting, inspect the mask, and adjust the HSV ranges conservatively. Avoid broad ranges that cause the robot to lock onto the floor, walls, or unrelated objects.
+
+## Dataset Utilities
+
+### Web Capture
+
+Use `/capture` and `/save` to collect raw camera images in:
+
+```text
+dataset/images/raw/
 ```
 
-Run the serial test:
+### Class-Specific Capture Tool
 
-```bash
-python robot_project/hardware/test_arduino_serial.py
-```
+`tools/capture_dataset.py` opens the camera and saves images to the class configured in the script. Its current default class is `toy_car`.
 
-## Safety and Calibration
+Controls:
 
-- Keep Raspberry Pi power separate from motor and high-current servo power.
-- Power the drive motors through the L298N driver.
-- Power the servos through a suitable regulated supply and the PCA9685 power input.
-- Do not power drive motors or the servo power rail directly from the Raspberry Pi.
-- Ensure required grounds are common between the connected control systems.
-- Stop the robot before relying on a single uncertain sensor reading.
-- Keep the gripper closed if an error occurs while carrying an object.
-- Do not clear destination or movement history automatically while an object is still held.
-- Recalibrate movement duration, return scaling, pickup distance, and bin distance on the physical robot.
-- Keep the robot completely still during IMU calibration.
+- `S`: save the current frame.
+- `Q`: quit.
+
+### Dataset Split Tool
+
+`tools/split_dataset.py` creates deterministic training, validation, and test splits using an `80/10/10` ratio and random seed `42`.
+
+Review its input and output directory constants before running it because it moves files.
 
 ## Known Limitations
 
-- The destination is assigned by `ObjectSelector` but is not yet included in `current_navigation_target`.
-- `TargetNavigator` does not yet save or lock the carried object's destination.
-- The robot currently has no colored-bin detector.
-- Bin alignment and bin approach are not implemented.
-- The current complete cycle does not yet reset and repeat automatically.
-- Dead-reckoning return accuracy depends on physical calibration and wheel slip.
-- HSV bin ranges will depend on lighting and physical bin material.
+- Return-to-start is open-loop dead reckoning; there are no wheel encoders or external localization.
+- Return accuracy changes with wheel slip, floor material, motor differences, payload, and battery voltage.
+- Bin detection depends on calibrated HSV ranges and controlled lighting.
+- The serial device path is currently fixed to `/dev/ttyACM0`.
+- The active model path is fixed to `models/oak/best.pt`.
+- Target confirmation uses bounding-box size and spatial consistency rather than selecting the smallest depth value.
+- The movement/IMU integration test script is not synchronized with the current firmware command set.
+- `robot_project/config.py` defines `YOLO_CONFIDENCE_THRESHOLD = 0.25`, but `robot_project/detection/yolo.py` currently hard-codes `conf=0.20`; changing the configuration value does not change inference confidence yet.
+- `tools/split_dataset.py` uses `dataset/labels/train` as both the raw-label source and training-label destination, so it can attempt to move a training label onto the same path. Review or correct the directories before using it.
+- Historical backup source files remain in the repository and can make maintenance harder.
+- There is no automated unit-test suite or continuous-integration workflow.
+- Hardware faults, servo stalls, wiring faults, and power instability cannot be fully handled by software.
+
 
 ## Author
 
-Lana Hawash
-
+Lana Hawash  
 Graduation Project

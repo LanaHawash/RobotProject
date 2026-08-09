@@ -16,6 +16,10 @@ from robot_project.hardware.arduino_controller import (
 from robot_project.navigation.target_navigator import (
     TargetNavigator,
 )
+
+from robot_project.navigation.deep_cleaning_navigator import (
+    DeepCleaningNavigator,
+)
 from robot_project.web.capture import image_count, save_image
 from robot_project.world.manager import ObjectManager
 
@@ -158,6 +162,10 @@ navigator = TargetNavigator(
     get_raw_frame=get_raw_frame,
     get_confirmed_target=get_confirmed_target,
     clear_confirmed_target=clear_confirmed_target,
+)
+
+deep_cleaning = DeepCleaningNavigator(
+    arduino=arduino,
 )
 
 
@@ -587,7 +595,7 @@ def index():
                 </button>
             </a>
 
-            <a href="/navigation/stop">
+            <a href="/emergency-stop">
                 <button
                     style="
                         font-size:22px;
@@ -598,6 +606,36 @@ def index():
                     Emergency Stop
                 </button>
             </a>
+            
+            <a href="/deep-cleaning/start">
+                <button
+                    style="
+                        font-size:22px;
+                        padding:14px;
+                        background:#2196F3;
+                    "
+                >
+                    Deep Cleaning
+                </button>
+            </a>
+
+            <a href="/deep-cleaning/stop">
+                <button
+                    style="
+                        font-size:22px;
+                        padding:14px;
+                        background:#FF9800;
+                    "
+                >
+                    Stop Deep Cleaning
+                </button>
+            </a>
+
+            <p>
+                <a href="/deep-cleaning/status">
+                    Open deep-cleaning status
+                </a>
+            </p>
 
             <p>
                 <a href="/navigation/status">
@@ -802,6 +840,15 @@ def start_navigation():
             ),
         }, 503
 
+    if deep_cleaning.is_running():
+        return {
+            "started": False,
+            "error": (
+                "Deep cleaning is active. "
+                "Stop it before starting target navigation."
+            ),
+        }, 409 
+
     if navigator.is_returning():
         return {
             "started": False,
@@ -887,7 +934,76 @@ def return_to_start():
         "return_route": navigator.return_route(),
     }
 
+@app.route("/deep-cleaning/start")
+def start_deep_cleaning():
+    if not arduino.is_connected():
+        return {
+            "started": False,
+            "error": (
+                arduino_error
+                or "Arduino is not connected."
+            ),
+        }, 503
 
+    if (
+        navigator.is_running()
+        or navigator.is_returning()
+    ):
+        return {
+            "started": False,
+            "error": (
+                "Target-search navigation is active. "
+                "Stop it before starting deep cleaning."
+            ),
+        }, 409
+
+    try:
+        deep_cleaning.start()
+    except RuntimeError as error:
+        return {
+            "started": False,
+            "error": str(error),
+        }, 409
+
+    return {
+        "started": True,
+        **deep_cleaning.get_status(),
+    }
+
+
+@app.route("/deep-cleaning/stop")
+def stop_deep_cleaning():
+    deep_cleaning.stop()
+
+    return {
+        "stopped": True,
+        **deep_cleaning.get_status(),
+    }
+
+
+@app.route("/deep-cleaning/status")
+def deep_cleaning_status():
+    return deep_cleaning.get_status()
+
+@app.route("/emergency-stop")
+def emergency_stop():
+    navigator.stop()
+    deep_cleaning.stop()
+
+    try:
+        arduino.stop()
+    except Exception as error:
+        return {
+            "stopped": False,
+            "error": str(error),
+        }, 500
+
+    return {
+        "stopped": True,
+        "target_navigation": navigator.status,
+        "deep_cleaning": deep_cleaning.get_status(),
+    }
+    
 @app.route("/navigation/status")
 def navigation_status():
     navigation_target = get_navigation_target()
@@ -1011,6 +1127,12 @@ def shutdown_system():
             f"Navigation shutdown warning: {error}"
         )
 
+    try:
+        deep_cleaning.stop()
+    except Exception as error:
+        print(
+            f"Deep-cleaning shutdown warning: {error}"
+        )
     # Stop the OAK-D pipeline so queue reads can exit.
     try:
         camera.close()
@@ -1039,6 +1161,16 @@ def shutdown_system():
         is not threading.current_thread()
     ):
         processing_thread.join(timeout=3.0)
+
+    cleaning_thread = deep_cleaning.cleaning_thread
+
+    if (
+        cleaning_thread is not None
+        and cleaning_thread.is_alive()
+        and cleaning_thread
+        is not threading.current_thread()
+    ):
+        cleaning_thread.join(timeout=3.0)
 
     # Send one final motor stop before closing serial.
     try:

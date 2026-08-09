@@ -71,7 +71,7 @@ class TargetNavigator:
     CM_PER_MS = 0.055
     MAX_FORWARD_CHUNK_MS = 5000
     MIN_EXECUTABLE_TURN_DEGREES = 1.0
-    RETURN_DURATION_SCALE = 0.4
+    RETURN_DURATION_SCALE = 0.5
 
     BIN_SEARCH_UPDATE_DELAY_SECONDS = 0.25
     MAX_BIN_SEARCH_UPDATES = 40
@@ -108,8 +108,7 @@ class TargetNavigator:
     MAX_BIN_LOST_UPDATES = 8
     MAX_BIN_ALIGNMENT_LOST_UPDATES = 8
 
-    BIN_EXIT_BACKWARD_MS = 400
-    ENVIRONMENT_TURN_DEGREES = 180
+    
 
     NEXT_TARGET_CHECK_DELAY_SECONDS = 0.30
 
@@ -276,7 +275,19 @@ class TargetNavigator:
             "HOME_REACHED",
             "FACING_BINS",
             "READY_TO_SORT",
+            "SEARCHING_FOR_BIN",
+            "BIN_FOUND",
+            "ALIGNING_WITH_BIN",
+            "BIN_ALIGNED",
+            "APPROACHING_BIN",
+            "APPROACHING_BIN_CONTINUOUSLY",
+            "APPROACHING_BIN_CONTROLLED",
+            "BIN_RELEASE_POSITION_REACHED",
             "RELEASING_OBJECT",
+            "OBJECT_RELEASED",
+            "FACING_ENVIRONMENT",
+            "READY_FOR_NEXT_OBJECT",
+            "RECALIBRATING_IMU",
         }
 
     def movement_history(self) -> list[dict]:
@@ -321,31 +332,11 @@ class TargetNavigator:
             f"bin_color={self.locked_bin_color}"
         )
     def _prepare_next_automatic_cycle(self) -> None:
+      
         """
-        Move away from the bin, face the object-search environment,
-        recalibrate the IMU, and clear the completed cycle.
+        Recalibrate and clear the completed cycle after the robot
+        has returned home and faced the object-search environment.
         """
-        self.status = "LEAVING_BIN"
-        self.last_action = (
-            f"BACKWARD {self.BIN_EXIT_BACKWARD_MS}"
-        )
-
-        self.arduino.backward(
-            self.BIN_EXIT_BACKWARD_MS
-        )
-
-        if self.stop_event.is_set():
-            return
-
-        self.status = "TURNING_TO_ENVIRONMENT"
-        self.last_action = (
-            f"TURN_RIGHT {self.ENVIRONMENT_TURN_DEGREES}"
-        )
-
-        self.arduino.turn_right(
-            self.ENVIRONMENT_TURN_DEGREES
-        )
-
         if self.stop_event.is_set():
             return
 
@@ -356,8 +347,7 @@ class TargetNavigator:
 
         self.arduino.calibrate_imu()
 
-        # Clear the completed route so the next object starts
-        # with a completely new movement history.
+        # Clear the completed home-to-bin-to-home route.
         self.history.clear()
 
         self.pickup_distance_cm = None
@@ -365,10 +355,9 @@ class TargetNavigator:
 
         self.last_pose = None
         self.current_bin_target = None
-
         self.centered_updates = 0
         self.misaligned_updates = 0
-     
+
         self.last_ultrasonic_distance_cm = None
         self.close_range_mode = False
 
@@ -387,9 +376,12 @@ class TargetNavigator:
         self.last_action = "WAITING_FOR_CONFIRMED_TARGET"
 
         print(
+            "Robot returned home. "
             "Previous sorting cycle cleared. "
             "Waiting for a new confirmed target."
         )
+
+        
 
 
     def _wait_for_next_confirmed_target(self) -> bool:
@@ -1120,12 +1112,48 @@ class TargetNavigator:
 
         self._complete_pickup_positioning(result)
         self._grab_object()
+
+        # Use the object-route history to return home.
         self._return_to_start()
         self._face_bins()
+
+        # The robot is now at home and facing the bins.
+        # Make this the origin of a new movement history.
+        self.history.clear()
+        self.last_pose = None
+
+        print(
+            "Object route cleared. "
+            "Starting a new home-to-bin movement history."
+        )
+
+        # Record a completely new route from home to the bin.
         self._find_locked_bin()
         self._align_with_locked_bin()
         self._approach_locked_bin()
         self._release_object()
+
+        if self.stop_event.is_set():
+            return False
+
+        # Create clearance before turning near the bin.
+        actual_duration = self.arduino.backward(300)
+
+        self.history.record_linear(
+            command="BACKWARD",
+            duration_ms=actual_duration,
+            source="BIN_EXIT",
+        )
+
+        # The history still represents the complete home-to-bin route,
+        # including the small movement away from the bin.
+        self._return_to_start()
+
+        if self.stop_event.is_set():
+            return False
+
+        # After returning home, face the object-search area.
+        self._face_object_environment()
 
         if self.stop_event.is_set():
             return False
@@ -1204,7 +1232,7 @@ class TargetNavigator:
     def _release_object(self) -> None:
         """
         Ask the Arduino to release the held object after the robot
-        has returned home and completed the existing bin-facing turn.
+        has reached the destination bin.
         """
         self.status = "RELEASING_OBJECT"
         self.last_action = "RELEASE_OBJECT"
@@ -1259,6 +1287,42 @@ class TargetNavigator:
 
         self.status = "HOME_REACHED"
         self.last_action = "HOME_REACHED"
+
+    def _face_object_environment(self) -> None:
+        """
+        Face the object-search area after returning from the bin.
+
+        The bin-route history begins with heading 0 degrees while
+        facing the bins. Therefore, the object-search environment
+        is heading 180 degrees in this local coordinate system.
+        """
+        self.status = "FACING_ENVIRONMENT"
+
+        pose = self.history.estimate_pose(
+            self.CM_PER_MS
+        )
+        self.last_pose = pose
+
+        turn_to_environment = self._normalize_angle(
+            180.0 - pose["heading_degrees"]
+        )
+
+        self.last_action = (
+            "FACE_ENVIRONMENT "
+            f"TURN_DEGREES={turn_to_environment:.1f}"
+        )
+
+        self._execute_turn(
+            turn_to_environment
+        )
+
+        self.status = "READY_FOR_NEXT_OBJECT"
+        self.last_action = "READY_FOR_NEXT_OBJECT"
+
+        print(
+            "Facing the object-search environment after "
+            f"turning {turn_to_environment:.1f} degrees."
+        )
 
     def _face_bins(self) -> None:
         """

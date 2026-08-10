@@ -1,0 +1,66 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    fragment@0 {
+        target = <&i2s_clk_producer>;
+
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    fragment@1 {
+        target-path = "/";
+
+        __overlay__ {
+            inmp441_codec: inmp441-codec {
+                #sound-dai-cells = <0>;
+
+                compatible = "dmic-codec";
+
+                num-channels = <2>;
+
+                status = "okay";
+            };
+        };
+    };
+
+    fragment@2 {
+        target = <&sound>;
+
+        __overlay__ {
+            compatible = "simple-audio-card";
+
+            simple-audio-card,name = "inmp441";
+
+            simple-audio-card,format = "i2s";
+
+            /*
+             * INMP441 microphones receive BCLK and WS
+             * from the Raspberry Pi, so the codec side
+             * is the clock slave.
+             */
+            simple-audio-card,bitclock-slave =
+                <&inmp441_codec_dai>;
+
+            simple-audio-card,frame-slave =
+                <&inmp441_codec_dai>;
+
+            status = "okay";
+
+            simple-audio-card,cpu {
+                sound-dai =
+                    <&i2s_clk_producer>;
+            };
+
+            inmp441_codec_dai:
+            simple-audio-card,codec {
+                sound-dai =
+                    <&inmp441_codec>;
+            };
+        };
+    };
+};

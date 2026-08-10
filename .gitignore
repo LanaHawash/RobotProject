@@ -79,3 +79,16 @@ toys.zip
 *.blob
 *.engine
 .DS_Store
+
+
+# Local audio models
+models/audio/
+
+# Audio test recordings
+*.wav
+
+# Compiled Raspberry Pi device-tree overlays
+*.dtbo
+
+# Local dependency snapshots
+requirements-before-audio.txt

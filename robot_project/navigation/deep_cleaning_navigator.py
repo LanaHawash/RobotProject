@@ -23,8 +23,8 @@ class DeepCleaningNavigator:
 
     DISTANCE_CHECK_DELAY_SECONDS = 0.10
 
-    FIRST_TURN_ANGLE_DEGREES = 86.0
-    SECOND_TURN_ANGLE_DEGREES = 82.0
+    FIRST_TURN_ANGLE_DEGREES = 85.0
+    SECOND_TURN_ANGLE_DEGREES = 83.0
     TURN_SETTLE_SECONDS = 1.0
 
     # Temporary lane-shift duration for calibration.

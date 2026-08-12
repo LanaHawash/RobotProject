@@ -92,3 +92,5 @@ models/audio/
 
 # Local dependency snapshots
 requirements-before-audio.txt
+
+config/firebase-service-account.json

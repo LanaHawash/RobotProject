@@ -23,6 +23,9 @@ from robot_project.navigation.deep_cleaning_navigator import (
 from robot_project.web.capture import image_count, save_image
 from robot_project.world.manager import ObjectManager
 
+from robot_project.audio.microphone import Microphone
+from robot_project.audio.audio_service import AudioService
+from robot_project.audio.speaker import Speaker
 
 app = Flask(__name__)
 
@@ -34,6 +37,12 @@ selector = ObjectSelector()
 fps_counter = FPS()
 arduino = ArduinoController()
 arduino_error = None
+
+microphone = Microphone()
+audio_service = AudioService()
+speaker = Speaker()
+
+audio_thread = None
 
 processing_thread = None
 
@@ -503,6 +512,66 @@ def camera_processing_loop():
 
     print("Camera processing thread stopped.")
 
+
+def audio_processing_loop():
+    print("Audio processing thread started.")
+
+    while not shutdown_complete:
+        try:
+            stereo_audio = microphone.read()
+            mono_audio = microphone.to_mono(stereo_audio)
+
+            events = audio_service.process_audio(mono_audio)
+
+            for event in events:
+                print("AUDIO EVENT:", event)
+
+                if event["type"] != "baby_cry":
+                    continue
+
+                print("Baby cry detected. Stopping microphone.")
+
+                microphone.stop()
+
+                try:
+                    speaker.play_baby_lullaby()
+
+                except Exception as error:
+                    print(
+                        f"Baby song playback error: {error}"
+                    )
+
+                finally:
+                    try:
+                        audio_service.reset()
+                    except Exception as error:
+                        print(
+                            f"Audio reset error: {error}"
+                        )
+
+                    if not shutdown_complete:
+                        try:
+                            microphone.start()
+                            print(
+                                "Baby song finished. "
+                                "Microphone restarted."
+                            )
+                        except Exception as error:
+                            print(
+                                f"Microphone restart error: {error}"
+                            )
+
+        except Exception as error:
+            if shutdown_complete:
+                break
+
+            print(
+                f"Audio processing error: {error}"
+            )
+
+            time.sleep(0.1)
+
+    print("Audio processing thread stopped.")
 
 def generate_stream(frame_type):
     """
@@ -1042,6 +1111,8 @@ def start_system():
     global system_started
     global processing_thread
     global arduino_error
+    global audio_thread
+   
 
     with system_start_lock:
         if system_started:
@@ -1057,6 +1128,7 @@ def start_system():
         camera.create_rgb()
         camera.create_depth()
         camera.start()
+        microphone.start()
 
         arduino_error = None
 
@@ -1080,7 +1152,13 @@ def start_system():
             daemon=True,
         )
 
+        audio_thread = threading.Thread(
+            target=audio_processing_loop,
+            daemon=True,
+        )
+
         processing_thread.start()
+        audio_thread.start()
 
         atexit.register(shutdown_system)
 
@@ -1141,6 +1219,13 @@ def shutdown_system():
             f"Camera shutdown warning: {error}"
         )
 
+    try:
+        microphone.stop()
+    except Exception as error:
+        print(
+            f"Microphone shutdown warning: {error}"
+        )    
+
     # Allow the navigation thread to stop before closing
     # the Arduino serial connection.
     navigation_thread = navigator.navigation_thread
@@ -1172,6 +1257,16 @@ def shutdown_system():
     ):
         cleaning_thread.join(timeout=3.0)
 
+
+
+    if (
+        audio_thread is not None
+        and audio_thread.is_alive()
+        and audio_thread is not threading.current_thread()
+    ):
+        audio_thread.join(timeout=3.0)
+
+        
     # Send one final motor stop before closing serial.
     try:
         arduino.stop()

@@ -214,6 +214,15 @@ class AudioService:
                     }
                 )
 
+
+    def reset(self) -> None:
+        self.cry_buffer = np.empty(
+            0,
+            dtype=np.int16,
+        )
+
+        self._return_to_idle()
+
     def _return_to_idle(self) -> None:
         self.state = self.STATE_IDLE
         self.command_deadline = None

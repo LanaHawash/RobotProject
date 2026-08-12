@@ -39,6 +39,21 @@ CRY_WINDOW_SAMPLES = int(
 # Initial value only. We will tune this with real audio.
 BABY_CRY_THRESHOLD = 0.30
 
-AUDIO_CHUNK_SAMPLES = 1280
+AUDIO_CHUNK_SAMPLES =1280
 
 COMMAND_LISTEN_SECONDS = 5.0
+
+AUDIO_SOUNDS_DIR = (
+    PROJECT_ROOT
+    / "robot_project"
+    / "audio"
+    / "sounds"
+)
+
+BABY_LULLABY_PATHS = (
+    AUDIO_SOUNDS_DIR
+    / "twinkle-twinkle-little-star.mp3",
+
+    AUDIO_SOUNDS_DIR
+    / "baby-shark.mp3",
+)

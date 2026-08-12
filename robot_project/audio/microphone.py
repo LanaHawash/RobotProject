@@ -37,9 +37,13 @@ class Microphone:
         self.lock = threading.Lock()
 
         self.stream = None
+        self.pending_audio = np.empty(
+            (0, self.channels),
+            dtype=np.int16,
+        )
 
         self.audio_queue = queue.Queue(
-            maxsize=50
+            maxsize=100
         )
 
     def start(self) -> None:
@@ -57,12 +61,17 @@ class Microphone:
                 except queue.Empty:
                     break
 
+            self.pending_audio = np.empty(
+                (0, self.channels),
+                dtype=np.int16,
+            )    
+
             self.stream = sd.InputStream(
                 device=self.device,
                 samplerate=self.sample_rate,
                 channels=self.channels,
                 dtype="int16",
-                blocksize=AUDIO_CHUNK_SAMPLES,
+                blocksize=0,
                 latency="high",
                 callback=self._audio_callback,
             )
@@ -96,10 +105,11 @@ class Microphone:
         timeout: float = 1.0,
     ) -> np.ndarray:
         """
-        Return the next captured stereo audio chunk.
+        Return exactly AUDIO_CHUNK_SAMPLES stereo samples.
 
-        Audio capture itself happens continuously in
-        the PortAudio callback.
+        PortAudio may provide hardware blocks of different
+        sizes. They are combined here into the fixed-size
+        chunks required by AudioService.
         """
 
         if not self.is_running():
@@ -107,17 +117,38 @@ class Microphone:
                 "Microphone is not running."
             )
 
-        try:
-            audio = self.audio_queue.get(
-                timeout=timeout
+        while (
+            len(self.pending_audio)
+            < AUDIO_CHUNK_SAMPLES
+        ):
+            try:
+                audio = self.audio_queue.get(
+                    timeout=timeout
+                )
+
+            except queue.Empty as error:
+                raise RuntimeError(
+                    "Timed out waiting for microphone audio."
+                ) from error
+
+            self.pending_audio = np.concatenate(
+                (
+                    self.pending_audio,
+                    audio,
+                ),
+                axis=0,
             )
 
-        except queue.Empty as error:
-            raise RuntimeError(
-                "Timed out waiting for microphone audio."
-            ) from error
+        result = self.pending_audio[
+            :AUDIO_CHUNK_SAMPLES
+        ].copy()
 
-        return audio
+        self.pending_audio = self.pending_audio[
+            AUDIO_CHUNK_SAMPLES:
+        ]
+
+        return result
+
 
     def to_mono(
         self,
@@ -174,11 +205,6 @@ class Microphone:
 
         Keep this callback extremely lightweight.
         """
-
-        if status:
-            print(
-                f"Microphone status: {status}"
-            )
 
         try:
             self.audio_queue.put_nowait(

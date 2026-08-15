@@ -27,6 +27,11 @@ from robot_project.audio.microphone import Microphone
 from robot_project.audio.audio_service import AudioService
 from robot_project.audio.speaker import Speaker
 
+from pathlib import Path
+
+import firebase_admin
+from firebase_admin import credentials, messaging
+
 app = Flask(__name__)
 
 camera = CameraPipeline()
@@ -41,6 +46,9 @@ arduino_error = None
 microphone = Microphone()
 audio_service = AudioService()
 speaker = Speaker()
+
+firebase_ready = False
+FCM_DEVICE_TOKEN = "fV05MFkRTNOhf0hvodcrSJ:APA91bFGGdlKzGEgYT-Cdw8A65EXS6Y3BD_vuFCqkC9SRJYUrmHyzr8j-MC4sFXb5hYw-t3Tkr2NHmhQoy8dHU1E6hXokSZnsqT-9odPjz31sAc-XRFJquk"
 
 audio_thread = None
 
@@ -513,11 +521,75 @@ def camera_processing_loop():
     print("Camera processing thread stopped.")
 
 
+def initialize_firebase():
+    global firebase_ready
+
+    if firebase_ready:
+        return
+
+    service_account_path = (
+        Path(__file__).resolve().parents[2]
+        / "config"
+        / "firebase-service-account.json"
+    )
+
+    cred = credentials.Certificate(
+        str(service_account_path)
+    )
+
+    firebase_admin.initialize_app(cred)
+
+    firebase_ready = True
+
+    print("Firebase notification service ready.")
+
+def send_baby_cry_notification():
+    if not firebase_ready:
+        print(
+            "Baby cry notification skipped: "
+            "Firebase is not ready."
+        )
+        return
+
+    try:
+        message = messaging.Message(
+            notification=messaging.Notification(
+                title="Baby Cry Detected",
+                body=(
+                    "RoboCare detected possible crying."
+                ),
+            ),
+            data={
+                "type": "BABY_CRY_DETECTED",
+                "mode": "AUTO_LULLABY",
+            },
+            token=FCM_DEVICE_TOKEN,
+        )
+
+        response = messaging.send(message)
+
+        print(
+            "Baby cry notification sent:",
+            response,
+        )
+
+    except Exception as error:
+        print(
+            "Firebase notification error:",
+            error,
+        )
+
+
+
 def audio_processing_loop():
     print("Audio processing thread started.")
 
     while not shutdown_complete:
         try:
+            if not microphone.is_running():
+                time.sleep(0.1)
+                continue
+
             stereo_audio = microphone.read()
             mono_audio = microphone.to_mono(stereo_audio)
 
@@ -529,8 +601,11 @@ def audio_processing_loop():
                 if event["type"] != "baby_cry":
                     continue
 
-                print("Baby cry detected. Stopping microphone.")
+                print("Baby cry detected.")
 
+                send_baby_cry_notification()
+
+                print("Stopping microphone before lullaby.")
                 microphone.stop()
 
                 try:
@@ -1101,6 +1176,32 @@ def navigation_status():
             else None
         ),
     }
+
+
+
+@app.get("/audio/lullaby/play")
+def play_lullaby():
+    try:
+        microphone.stop()
+
+        speaker.play_baby_lullaby()
+
+        audio_service.reset()
+
+        microphone.start()
+
+        return {
+            "success": True,
+            "message": "Lullaby played successfully.",
+        }
+
+    except Exception as error:
+        return {
+            "success": False,
+            "error": str(error),
+        }, 500
+
+        
 def start_system():
     """
     Start the physical robot hardware once.
@@ -1128,6 +1229,7 @@ def start_system():
         camera.create_rgb()
         camera.create_depth()
         camera.start()
+        initialize_firebase()
         microphone.start()
 
         arduino_error = None

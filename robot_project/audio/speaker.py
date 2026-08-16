@@ -8,12 +8,44 @@ from robot_project.audio.config import (
 
 class Speaker:
     """
-    Plays baby songs through the Raspberry Pi's
-    configured system audio output.
+    Plays speech responses and baby songs through
+    the Raspberry Pi configured audio output.
     """
 
     def __init__(self):
         self.playing = False
+
+    def speak(
+        self,
+        text: str,
+    ) -> None:
+        if not text:
+            return
+
+        print(
+            f"Robot speaking: {text}"
+        )
+
+        self.playing = True
+
+        try:
+            subprocess.run(
+                [
+                    "espeak-ng",
+                    "-v",
+                    "en+f3",
+                    "-s",
+                    "140",
+                    "-p",
+                    "45",
+                    text,
+                ],
+                check=True,
+                timeout=10,
+            )
+
+        finally:
+            self.playing = False
 
     def play_baby_lullaby(self) -> None:
         song_path = random.choice(
@@ -34,11 +66,8 @@ class Speaker:
         try:
             process = subprocess.Popen(
                 [
-                    "ffplay",
-                    "-nodisp",
-                    "-autoexit",
-                    "-loglevel",
-                    "quiet",
+                    "mpg123",
+                    "-q",
                     str(song_path),
                 ]
             )
@@ -51,9 +80,11 @@ class Speaker:
 
                 try:
                     process.wait(timeout=2)
+
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
+
         finally:
             self.playing = False
 

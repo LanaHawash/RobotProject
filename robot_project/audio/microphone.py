@@ -32,7 +32,7 @@ class Microphone:
         self.sample_width_bytes = SAMPLE_WIDTH_BYTES
 
         self.device = device
-
+        self.gain = 10.0
         self.running = False
         self.lock = threading.Lock()
 
@@ -154,10 +154,6 @@ class Microphone:
         self,
         audio: np.ndarray,
     ) -> np.ndarray:
-        """
-        Convert two-channel int16 microphone audio
-        into mono int16 audio for the AI models.
-        """
 
         if audio.dtype != np.int16:
             raise ValueError(
@@ -176,21 +172,21 @@ class Microphone:
                 f"received {audio.shape[1]}."
             )
 
-        left = audio[:, 0].astype(
-            np.int32
+        left = audio[:, 0].astype(np.int32)
+
+        mono = left
+
+        gain = 7.0
+
+        mono = mono.astype(np.float32) * gain
+
+        mono = np.clip(
+            mono,
+            -32768,
+            32767,
         )
 
-        right = audio[:, 1].astype(
-            np.int32
-        )
-
-        mono = (
-            (left + right) // 2
-        )
-
-        return mono.astype(
-            np.int16
-        )
+        return mono.astype(np.int16)
 
     def _audio_callback(
         self,

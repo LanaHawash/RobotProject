@@ -27,6 +27,9 @@ class TargetNavigator:
     # Stop after two consecutive genuinely misaligned updates.
     MISALIGNMENT_CONFIRMATION_UPDATES = 2
 
+
+    MICRO_TURN_DEGREES = 1
+    MICRO_TURN_MAX_ERROR_PX = 120
     SMALL_TURN_DEGREES = 3
     LARGE_TURN_DEGREES = 6
 
@@ -975,10 +978,17 @@ class TargetNavigator:
     ) -> None:
         self.status = "ALIGNING"
 
-        if driving_correction:
+        error_px = abs(horizontal_error)
+
+        if error_px <= self.MICRO_TURN_MAX_ERROR_PX:
+            turn_angle = self.MICRO_TURN_DEGREES
+
+        elif driving_correction:
             turn_angle = self.SMALL_TURN_DEGREES
-        elif abs(horizontal_error) > 220:
+
+        elif error_px > 220:
             turn_angle = self.LARGE_TURN_DEGREES
+
         else:
             turn_angle = self.SMALL_TURN_DEGREES
 

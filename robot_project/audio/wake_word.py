@@ -1,5 +1,4 @@
 from pathlib import Path
-import openwakeword
 import numpy as np
 import openwakeword
 from openwakeword.model import Model
@@ -79,6 +78,11 @@ class WakeWordDetector:
         score = max(
             float(value)
             for value in predictions.values()
+        )
+
+        print(
+            f"Hey Robo score: {score:.4f} | "
+            f"threshold: {self.threshold:.2f}"
         )
 
         detected = score >= self.threshold

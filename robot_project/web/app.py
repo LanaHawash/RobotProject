@@ -579,7 +579,11 @@ def send_baby_cry_notification():
             error,
         )
 
-
+def send_baby_cry_notification_async():
+    threading.Thread(
+        target=send_baby_cry_notification,
+        daemon=True,
+    ).start()
 
 def audio_processing_loop():
     print("Audio processing thread started.")
@@ -599,6 +603,45 @@ def audio_processing_loop():
                 print("AUDIO EVENT:", event)
 
                 # -----------------------------
+                # Wake-word acknowledgement
+                # -----------------------------
+                if event["type"] == "wake_word":
+                    print(
+                        "Hey Robo detected. "
+                        "Playing acknowledgement."
+                    )
+
+                    # Prevent the microphones from hearing
+                    # the robot's own voice response.
+                    microphone.stop()
+
+                    try:
+                        speaker.speak("How can I help?")
+
+                    except Exception as error:
+                        print(
+                            f"Wake-word response error: {error}"
+                        )
+
+                    finally:
+                        if not shutdown_complete:
+                            try:
+                                microphone.start()
+
+                                print(
+                                    "Wake-word response finished. "
+                                    "Listening for command."
+                                )
+
+                            except Exception as error:
+                                print(
+                                    "Microphone restart error "
+                                    f"after wake-word response: {error}"
+                                )
+
+                    continue
+
+                # -----------------------------
                 # Voice commands
                 # -----------------------------
                 if event["type"] == "command":
@@ -615,7 +658,7 @@ def audio_processing_loop():
                         elif command == "start deep cleaning":
                             result = start_deep_cleaning()
 
-                        elif command in ("stop", "cancel"):
+                        elif command == "stop":
                             result = emergency_stop()
 
                         else:
@@ -644,7 +687,9 @@ def audio_processing_loop():
 
                 print("Baby cry detected.")
 
-                send_baby_cry_notification()
+                # Send notification in parallel so network latency
+                # does not delay lullaby playback.
+                send_baby_cry_notification_async()
 
                 print(
                     "Stopping microphone before lullaby."
@@ -682,40 +727,8 @@ def audio_processing_loop():
                                 f"Microphone restart error: {error}"
                             )
 
-                            print("Baby cry detected.")
 
-                            send_baby_cry_notification()
-
-                            print("Stopping microphone before lullaby.")
-                            microphone.stop()
-
-                            try:
-                                speaker.play_baby_lullaby()
-
-                            except Exception as error:
-                                print(
-                                    f"Baby song playback error: {error}"
-                                )
-
-                            finally:
-                                try:
-                                    audio_service.reset()
-                                except Exception as error:
-                                    print(
-                                        f"Audio reset error: {error}"
-                                    )
-
-                                if not shutdown_complete:
-                                    try:
-                                        microphone.start()
-                                        print(
-                                            "Baby song finished. "
-                                            "Microphone restarted."
-                                        )
-                                    except Exception as error:
-                                        print(
-                                            f"Microphone restart error: {error}"
-                                        )
+                         
 
         except Exception as error:
             if shutdown_complete:
@@ -1262,26 +1275,46 @@ def navigation_status():
 
 @app.get("/audio/lullaby/play")
 def play_lullaby():
+    error = None
+
     try:
         microphone.stop()
-
         speaker.play_baby_lullaby()
 
-        audio_service.reset()
+    except Exception as exc:
+        error = exc
 
-        microphone.start()
+    finally:
+        try:
+            audio_service.reset()
+        except Exception as reset_error:
+            print(
+                f"Audio reset error: {reset_error}"
+            )
 
-        return {
-            "success": True,
-            "message": "Lullaby played successfully.",
-        }
+        if not shutdown_complete:
+            try:
+                microphone.start()
 
-    except Exception as error:
+            except Exception as restart_error:
+                print(
+                    f"Microphone restart error: "
+                    f"{restart_error}"
+                )
+
+                if error is None:
+                    error = restart_error
+
+    if error is not None:
         return {
             "success": False,
             "error": str(error),
         }, 500
 
+    return {
+        "success": True,
+        "message": "Lullaby played successfully.",
+    }
         
 def start_system():
     """

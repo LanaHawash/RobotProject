@@ -27,7 +27,8 @@ class AudioService:
 
     STATE_IDLE = "IDLE"
     STATE_COMMAND_LISTENING = "COMMAND_LISTENING"
-
+    CRY_HOP_SAMPLES = 4000
+    
     def __init__(self):
         self.wake_word = WakeWordDetector()
         self.speech_recognizer = SpeechRecognizer()
@@ -210,9 +211,7 @@ class AudioService:
                 )
             )
 
-            print(
-                f"Baby cry score: {score:.3f}"
-            )
+            
 
             if detected:
                 events.append(

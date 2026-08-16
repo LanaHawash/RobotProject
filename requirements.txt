@@ -29,3 +29,11 @@ Werkzeug==3.1.8
 xmltodict==1.0.4
 pyserial==3.5
 ultralytics==8.4.86
+
+# Audio, voice recognition, baby-cry detection, and notifications
+sounddevice
+openwakeword
+vosk
+tensorflow
+tensorflow-hub
+firebase-admin

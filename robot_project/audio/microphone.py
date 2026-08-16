@@ -176,7 +176,7 @@ class Microphone:
 
         mono = left
 
-        gain = 7.0
+        gain = 10.0
 
         mono = mono.astype(np.float32) * gain
 

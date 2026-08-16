@@ -13,6 +13,14 @@ class SpeechRecognizer:
     """
     Converts mono 16-bit PCM speech into robot commands
     using Vosk.
+
+    Final Vosk segments are accumulated so a command can
+    survive a small pause between words, for example:
+
+        "start" + "navigation"
+
+    Partial results are also used for lower-latency command
+    detection.
     """
 
     COMMANDS = [
@@ -21,7 +29,10 @@ class SpeechRecognizer:
         "stop",
         "cancel",
     ]
-    PARTIAL_CONFIRMATION_REQUIRED = 3
+
+    # Two matching partials is fast while still giving some
+    # protection against one unstable partial result.
+    PARTIAL_CONFIRMATION_REQUIRED = 2
 
     def __init__(self):
         if not VOSK_MODEL_PATH.exists():
@@ -29,7 +40,9 @@ class SpeechRecognizer:
                 f"Vosk model not found: {VOSK_MODEL_PATH}"
             )
 
-        self.model = Model(str(VOSK_MODEL_PATH))
+        self.model = Model(
+            str(VOSK_MODEL_PATH)
+        )
 
         grammar = json.dumps(
             self.COMMANDS + ["[unk]"]
@@ -40,35 +53,93 @@ class SpeechRecognizer:
             SAMPLE_RATE,
             grammar,
         )
+
+        self.committed_text = ""
+
         self.partial_candidate = None
         self.partial_confirmation_count = 0
 
-        
 
     def reset(self) -> None:
-        """
-        Reset the recognizer before listening for
-        a new command.
-        """
-
         self.recognizer.Reset()
+
+        self.committed_text = ""
 
         self.partial_candidate = None
         self.partial_confirmation_count = 0
+
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        return " ".join(
+            text.lower().strip().split()
+        )
+
+
+    def _match_command(
+        self,
+        text: str,
+    ) -> str | None:
+
+        text = self._normalize(text)
+
+        if text in self.COMMANDS:
+            return text
+
+        return None
+
+
+    def _could_be_command(
+        self,
+        text: str,
+    ) -> bool:
+
+        text = self._normalize(text)
+
+        if not text:
+            return True
+
+        return any(
+            command.startswith(text)
+            for command in self.COMMANDS
+        )
+
+
+    def _process_partial_candidate(
+        self,
+        text: str,
+    ) -> str | None:
+
+        command = self._match_command(text)
+
+        if command is None:
+            self.partial_candidate = None
+            self.partial_confirmation_count = 0
+            return None
+
+        if command == self.partial_candidate:
+            self.partial_confirmation_count += 1
+
+        else:
+            self.partial_candidate = command
+            self.partial_confirmation_count = 1
+
+        if (
+            self.partial_confirmation_count
+            >= self.PARTIAL_CONFIRMATION_REQUIRED
+        ):
+            self.partial_candidate = None
+            self.partial_confirmation_count = 0
+
+            return command
+
+        return None
+
 
     def process_audio(
         self,
         audio: np.ndarray,
     ) -> str | None:
-        """
-        Process mono signed 16-bit PCM samples.
-
-        Returns a recognized robot command when either:
-
-        - Vosk produces a valid final result, or
-        - the same complete command appears consistently
-        in partial recognition results.
-        """
 
         if audio.dtype != np.int16:
             raise ValueError(
@@ -89,46 +160,88 @@ class SpeechRecognizer:
                 self.recognizer.Result()
             )
 
-            text = result.get(
-                "text",
-                "",
-            ).strip()
+            segment = self._normalize(
+                result.get(
+                    "text",
+                    "",
+                )
+            )
 
-            if text in self.COMMANDS:
-                return text
+            if not segment:
+                return None
+
+            combined = self._normalize(
+                f"{self.committed_text} {segment}"
+            )
+
+            command = self._match_command(
+                combined
+            )
+
+            if command is not None:
+                return command
+
+            # Keep incomplete command fragments.
+            #
+            # Example:
+            #     committed_text = "start"
+            #
+            # so that the next Vosk result:
+            #     "navigation"
+            #
+            # becomes:
+            #     "start navigation"
+            if self._could_be_command(
+                combined
+            ):
+                self.committed_text = combined
+
+            elif self._could_be_command(
+                segment
+            ):
+                self.committed_text = segment
+
+            else:
+                self.committed_text = ""
+
+            self.partial_candidate = None
+            self.partial_confirmation_count = 0
 
             return None
+
 
         partial_result = json.loads(
             self.recognizer.PartialResult()
         )
 
-        partial_text = partial_result.get(
-            "partial",
-            "",
-        ).strip()
+        partial_text = self._normalize(
+            partial_result.get(
+                "partial",
+                "",
+            )
+        )
 
-        if partial_text not in self.COMMANDS:
-            self.partial_candidate = None
-            self.partial_confirmation_count = 0
+        if not partial_text:
             return None
 
-        if partial_text == self.partial_candidate:
-            self.partial_confirmation_count += 1
+        combined = self._normalize(
+            f"{self.committed_text} {partial_text}"
+        )
 
-        else:
-            self.partial_candidate = partial_text
-            self.partial_confirmation_count = 1
+        command = self._process_partial_candidate(
+            combined
+        )
 
-        if (
-            self.partial_confirmation_count
-            >= self.PARTIAL_CONFIRMATION_REQUIRED
-        ):
-            command = self.partial_candidate
-
-            self.partial_candidate = None
-            self.partial_confirmation_count = 0
-
+        if command is not None:
             return command
+
+        # If an old committed fragment no longer makes
+        # sense, also try the new partial on its own.
+        if not self._could_be_command(
+            combined
+        ):
+            return self._process_partial_candidate(
+                partial_text
+            )
 
         return None

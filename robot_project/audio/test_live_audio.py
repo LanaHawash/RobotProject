@@ -13,7 +13,7 @@ def main():
     microphone.start()
 
     print("Live audio test started.")
-    print("Say: Hey Jarvis")
+    print("Say: Hey Robo")
     print("Press Ctrl+C to stop.")
 
     try:

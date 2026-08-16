@@ -72,7 +72,7 @@ class Microphone:
                 channels=self.channels,
                 dtype="int16",
                 blocksize=0,
-                latency="high",
+                latency="low",
                 callback=self._audio_callback,
             )
 

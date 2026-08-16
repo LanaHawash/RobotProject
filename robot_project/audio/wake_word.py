@@ -1,22 +1,21 @@
 from pathlib import Path
-
+import openwakeword
 import numpy as np
 import openwakeword
 from openwakeword.model import Model
+from robot_project.audio.config import (
+    WAKE_WORD_MODEL_PATH,
+    WAKE_WORD_THRESHOLD,
+)
 
 
 class WakeWordDetector:
     """
-    Detects the robot wake word using openWakeWord.
-
-    We temporarily use the built-in "Hey Jarvis"
-    model to test the software pipeline.
-
-    Later this model will be replaced by the
-    custom "Hey Tiddy" model.
+    Detects the custom "Hey Robo" wake word
+    using openWakeWord.
     """
 
-    DEFAULT_THRESHOLD = 0.5
+    DEFAULT_THRESHOLD = WAKE_WORD_THRESHOLD
 
     def __init__(
         self,
@@ -26,9 +25,15 @@ class WakeWordDetector:
         self.threshold = threshold
 
         if model_path is None:
-            model_path = self._find_test_model()
+            model_path = WAKE_WORD_MODEL_PATH
 
         self.model_path = Path(model_path)
+
+        if not self.model_path.exists():
+            raise RuntimeError(
+                "Hey Robo wake-word model was not found: "
+                f"{self.model_path}"
+            )
 
         self.model = Model(
             wakeword_models=[
@@ -37,28 +42,7 @@ class WakeWordDetector:
             inference_framework="onnx",
         )
 
-    def _find_test_model(self) -> Path:
-        """
-        Find the built-in Hey Jarvis ONNX model.
-        """
-
-        model_paths = (
-            openwakeword.get_pretrained_model_paths()
-        )
-
-        for path in model_paths:
-            path = Path(path)
-
-            if "hey_jarvis" in path.name.lower():
-                onnx_path = path.with_suffix(".onnx")
-
-                if onnx_path.exists():
-                    return onnx_path
-
-        raise RuntimeError(
-            "Hey Jarvis ONNX test model was not found."
-        )
-
+   
     def reset(self) -> None:
         """
         Reset openWakeWord's internal prediction state.

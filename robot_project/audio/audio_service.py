@@ -36,7 +36,7 @@ class AudioService:
         self.state = self.STATE_IDLE
 
         self.command_deadline = None
-
+        self.wake_word_resume_time = 0.0
         self.cry_buffer = np.empty(
             0,
             dtype=np.int16,
@@ -64,10 +64,14 @@ class AudioService:
         )
 
         if self.state == self.STATE_IDLE:
-            self._process_wake_word(
-                audio,
-                events,
-            )
+            if (
+                time.monotonic()
+                >= self.wake_word_resume_time
+            ):
+                self._process_wake_word(
+                    audio,
+                    events,
+                )
 
         elif (
             self.state
@@ -206,6 +210,10 @@ class AudioService:
                 )
             )
 
+            print(
+                f"Baby cry score: {score:.3f}"
+            )
+
             if detected:
                 events.append(
                     {
@@ -228,6 +236,11 @@ class AudioService:
         self.command_deadline = None
 
         self.speech_recognizer.reset()
+        self.wake_word.reset()
+
+        self.wake_word_resume_time = (
+            time.monotonic() + 0.5
+        )
 
     def get_status(self) -> dict:
         return {

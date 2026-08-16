@@ -598,6 +598,47 @@ def audio_processing_loop():
             for event in events:
                 print("AUDIO EVENT:", event)
 
+                # -----------------------------
+                # Voice commands
+                # -----------------------------
+                if event["type"] == "command":
+                    command = event["command"]
+
+                    print(
+                        f"Voice command received: {command}"
+                    )
+
+                    try:
+                        if command == "start navigation":
+                            result = start_navigation()
+
+                        elif command == "start deep cleaning":
+                            result = start_deep_cleaning()
+
+                        elif command in ("stop", "cancel"):
+                            result = emergency_stop()
+
+                        else:
+                            print(
+                                f"Unknown voice command: {command}"
+                            )
+                            continue
+
+                        print(
+                            "Voice command result:",
+                            result,
+                        )
+
+                    except Exception as error:
+                        print(
+                            f"Voice command error: {error}"
+                        )
+
+                    continue
+
+                # -----------------------------
+                # Baby cry
+                # -----------------------------
                 if event["type"] != "baby_cry":
                     continue
 
@@ -605,7 +646,10 @@ def audio_processing_loop():
 
                 send_baby_cry_notification()
 
-                print("Stopping microphone before lullaby.")
+                print(
+                    "Stopping microphone before lullaby."
+                )
+
                 microphone.stop()
 
                 try:
@@ -627,14 +671,51 @@ def audio_processing_loop():
                     if not shutdown_complete:
                         try:
                             microphone.start()
+
                             print(
                                 "Baby song finished. "
                                 "Microphone restarted."
                             )
+
                         except Exception as error:
                             print(
                                 f"Microphone restart error: {error}"
                             )
+
+                            print("Baby cry detected.")
+
+                            send_baby_cry_notification()
+
+                            print("Stopping microphone before lullaby.")
+                            microphone.stop()
+
+                            try:
+                                speaker.play_baby_lullaby()
+
+                            except Exception as error:
+                                print(
+                                    f"Baby song playback error: {error}"
+                                )
+
+                            finally:
+                                try:
+                                    audio_service.reset()
+                                except Exception as error:
+                                    print(
+                                        f"Audio reset error: {error}"
+                                    )
+
+                                if not shutdown_complete:
+                                    try:
+                                        microphone.start()
+                                        print(
+                                            "Baby song finished. "
+                                            "Microphone restarted."
+                                        )
+                                    except Exception as error:
+                                        print(
+                                            f"Microphone restart error: {error}"
+                                        )
 
         except Exception as error:
             if shutdown_complete:

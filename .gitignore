@@ -93,5 +93,5 @@ models/audio/
 # Local dependency snapshots
 requirements-before-audio.txt
 
-config/firebase-service-account.jsonen_US-lessac-medium.onnx.json
 config/firebase-service-account.json
+en_US-lessac-medium.onnx.json

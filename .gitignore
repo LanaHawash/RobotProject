@@ -94,3 +94,4 @@ models/audio/
 requirements-before-audio.txt
 
 config/firebase-service-account.jsonen_US-lessac-medium.onnx.json
+config/firebase-service-account.json

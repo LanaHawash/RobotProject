@@ -35,6 +35,10 @@ class TargetNavigator:
 
     TARGET_UPDATE_DELAY_SECONDS = 0.35
     MAX_LOST_TARGET_UPDATES = 8
+    SEARCH_TURN_DEGREES = 30.0
+    MAX_SEARCH_TURNS_RIGHT = 3
+    MAX_SEARCH_TURNS_LEFT = 3
+    SEARCH_SETTLE_SECONDS = 0.6
 
     # The selected target must remain centered for two consecutive
     # camera updates before ultrasonic monitoring is allowed.
@@ -393,11 +397,15 @@ class TargetNavigator:
         automatically without requiring another Start button press.
         """
         while not self.stop_event.is_set():
-            selected_target = self.get_confirmed_target()
+            selected_target = (
+                self._search_for_confirmed_target()
+            )
 
             if selected_target is None:
                 self.status = "WAITING_FOR_NEXT_TARGET"
-                self.last_action = "WAITING_FOR_CONFIRMED_TARGET"
+                self.last_action = (
+                    "SEARCH_COMPLETE_NO_TARGET"
+                )
 
                 time.sleep(
                     self.NEXT_TARGET_CHECK_DELAY_SECONDS
@@ -408,7 +416,6 @@ class TargetNavigator:
                 selected_target
             )
 
-            self.history.clear()
             self.current_bin_target = None
 
             self.pickup_distance_cm = None
@@ -1023,6 +1030,119 @@ class TargetNavigator:
                 command="TURN_LEFT",
                 angle=actual_angle,
             )
+
+
+    def _search_turn(
+        self,
+        direction: str,
+    ) -> None:
+
+        if direction == "RIGHT":
+            self.status = "SEARCHING_RIGHT"
+            self.last_action = (
+                f"SEARCH_TURN_RIGHT "
+                f"{self.SEARCH_TURN_DEGREES}"
+            )
+
+            actual_angle = self.arduino.turn_right(
+                self.SEARCH_TURN_DEGREES
+            )
+
+            self.history.record_turn(
+                command="TURN_RIGHT",
+                angle=actual_angle,
+            )
+
+        elif direction == "LEFT":
+            self.status = "SEARCHING_LEFT"
+            self.last_action = (
+                f"SEARCH_TURN_LEFT "
+                f"{self.SEARCH_TURN_DEGREES}"
+            )
+
+            actual_angle = self.arduino.turn_left(
+                self.SEARCH_TURN_DEGREES
+            )
+
+            self.history.record_turn(
+                command="TURN_LEFT",
+                angle=actual_angle,
+            )
+
+        else:
+            raise ValueError(
+                f"Invalid search direction: {direction}"
+            )
+
+        time.sleep(
+            self.SEARCH_SETTLE_SECONDS
+        )        
+
+
+    def _search_for_confirmed_target(
+        self,
+    ) -> Optional[dict]:
+        """
+        Search for an object around the robot.
+
+        Sequence:
+            original view
+            right x3
+            left x3 back toward original heading
+
+        Every physical turn is recorded in MovementHistory.
+        """
+
+        # First check the current/original camera direction.
+        selected_target = (
+            self.get_confirmed_target()
+        )
+
+        if selected_target is not None:
+            return selected_target
+
+        # -----------------------------
+        # SEARCH RIGHT
+        # -----------------------------
+
+        for search_step in range(
+            self.MAX_SEARCH_TURNS_RIGHT
+        ):
+            if self.stop_event.is_set():
+                return None
+
+            self._search_turn("RIGHT")
+
+            selected_target = (
+                self.get_confirmed_target()
+            )
+
+            if selected_target is not None:
+                return selected_target
+
+        # -----------------------------
+        # RETURN LEFT TOWARD ORIGINAL
+        # -----------------------------
+
+        for search_step in range(
+            self.MAX_SEARCH_TURNS_LEFT
+        ):
+            if self.stop_event.is_set():
+                return None
+
+            self._search_turn("LEFT")
+
+            selected_target = (
+                self.get_confirmed_target()
+            )
+
+            if selected_target is not None:
+                return selected_target
+
+        # After three right turns followed by three left
+        # turns, the robot should be approximately back
+        # at its original heading.
+        return None
 
     def _distance_is_unreliable(
         self,

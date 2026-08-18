@@ -20,7 +20,7 @@ WAKE_WORD_MODEL_PATH = (
     / "hey_robo.onnx"
 )
 
-WAKE_WORD_THRESHOLD = 0.15
+WAKE_WORD_THRESHOLD  = 0.03
 
 
 YAMNET_MODEL_DIR = (

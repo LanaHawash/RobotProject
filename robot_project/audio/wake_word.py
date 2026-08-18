@@ -80,10 +80,10 @@ class WakeWordDetector:
             for value in predictions.values()
         )
 
-        print(
-            f"Hey Robo score: {score:.4f} | "
-            f"threshold: {self.threshold:.2f}"
-        )
+        # print(
+        #     f"Hey Robo score: {score:.4f} | "
+        #     f"threshold: {self.threshold:.2f}"
+        # )
 
         detected = score >= self.threshold
 

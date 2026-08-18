@@ -32,7 +32,7 @@ class Microphone:
         self.sample_width_bytes = SAMPLE_WIDTH_BYTES
 
         self.device = device
-        self.gain = 10.0
+        self.gain = 3.0
         self.running = False
         self.lock = threading.Lock()
 
@@ -172,13 +172,14 @@ class Microphone:
                 f"received {audio.shape[1]}."
             )
 
-        left = audio[:, 0].astype(np.int32)
+        left = audio[:, 0].astype(np.float32)
+        right = audio[:, 1].astype(np.float32)
 
-        mono = left
+        # Combine both INMP441 microphones into one mono signal.
+        mono = (left + right) / 2.0
 
-        gain = 10.0
-
-        mono = mono.astype(np.float32) * gain
+        # Apply the configured microphone gain.
+        mono = mono * self.gain
 
         mono = np.clip(
             mono,

@@ -36,9 +36,11 @@ class TargetNavigator:
     TARGET_UPDATE_DELAY_SECONDS = 0.35
     MAX_LOST_TARGET_UPDATES = 8
     SEARCH_TURN_DEGREES = 30.0
+    SEARCH_RETURN_TO_CENTER_DEGREES = 90.0
     MAX_SEARCH_TURNS_RIGHT = 3
     MAX_SEARCH_TURNS_LEFT = 3
     SEARCH_SETTLE_SECONDS = 0.6
+    SEARCH_DETECTION_PAUSE_SECONDS = 2.0
 
     # The selected target must remain centered for two consecutive
     # camera updates before ultrasonic monitoring is allowed.
@@ -1035,17 +1037,24 @@ class TargetNavigator:
     def _search_turn(
         self,
         direction: str,
+        angle: Optional[float] = None,
     ) -> None:
+
+        turn_angle = (
+            self.SEARCH_TURN_DEGREES
+            if angle is None
+            else float(angle)
+        )
 
         if direction == "RIGHT":
             self.status = "SEARCHING_RIGHT"
             self.last_action = (
                 f"SEARCH_TURN_RIGHT "
-                f"{self.SEARCH_TURN_DEGREES}"
+                f"{turn_angle}"
             )
 
             actual_angle = self.arduino.turn_right(
-                self.SEARCH_TURN_DEGREES
+                turn_angle
             )
 
             self.history.record_turn(
@@ -1057,11 +1066,11 @@ class TargetNavigator:
             self.status = "SEARCHING_LEFT"
             self.last_action = (
                 f"SEARCH_TURN_LEFT "
-                f"{self.SEARCH_TURN_DEGREES}"
+                f"{turn_angle}"
             )
 
             actual_angle = self.arduino.turn_left(
-                self.SEARCH_TURN_DEGREES
+                turn_angle
             )
 
             self.history.record_turn(
@@ -1076,8 +1085,7 @@ class TargetNavigator:
 
         time.sleep(
             self.SEARCH_SETTLE_SECONDS
-        )        
-
+        )
 
     def _search_for_confirmed_target(
         self,
@@ -1086,14 +1094,28 @@ class TargetNavigator:
         Search for an object around the robot.
 
         Sequence:
-            original view
-            right x3
-            left x3 back toward original heading
+            check original view
+
+            right 30 degrees -> check
+            right 30 degrees -> check
+            right 30 degrees -> check
+
+            return left 90 degrees to original heading
+
+            left 30 degrees -> check
+            left 30 degrees -> check
+            left 30 degrees -> check
+
+        If nothing is found, return right 90 degrees
+        to the original heading before finishing.
 
         Every physical turn is recorded in MovementHistory.
         """
 
-        # First check the current/original camera direction.
+        # --------------------------------
+        # CHECK ORIGINAL VIEW
+        # --------------------------------
+
         selected_target = (
             self.get_confirmed_target()
         )
@@ -1101,17 +1123,23 @@ class TargetNavigator:
         if selected_target is not None:
             return selected_target
 
-        # -----------------------------
+        # --------------------------------
         # SEARCH RIGHT
-        # -----------------------------
+        # --------------------------------
 
-        for search_step in range(
+        for _ in range(
             self.MAX_SEARCH_TURNS_RIGHT
         ):
             if self.stop_event.is_set():
                 return None
 
             self._search_turn("RIGHT")
+
+            # Give the camera/detector time to observe
+            # the new direction before checking.
+            time.sleep(
+                self.SEARCH_DETECTION_PAUSE_SECONDS
+            )
 
             selected_target = (
                 self.get_confirmed_target()
@@ -1120,11 +1148,29 @@ class TargetNavigator:
             if selected_target is not None:
                 return selected_target
 
-        # -----------------------------
-        # RETURN LEFT TOWARD ORIGINAL
-        # -----------------------------
+        # --------------------------------
+        # RETURN TO ORIGINAL HEADING
+        # --------------------------------
 
-        for search_step in range(
+        if self.stop_event.is_set():
+            return None
+
+        self.status = "RETURNING_SEARCH_TO_CENTER"
+        self.last_action = (
+            "SEARCH_RETURN_TO_CENTER_LEFT "
+            f"{self.SEARCH_RETURN_TO_CENTER_DEGREES}"
+        )
+
+        self._search_turn(
+            "LEFT",
+            self.SEARCH_RETURN_TO_CENTER_DEGREES,
+        )
+
+        # --------------------------------
+        # SEARCH LEFT
+        # --------------------------------
+
+        for _ in range(
             self.MAX_SEARCH_TURNS_LEFT
         ):
             if self.stop_event.is_set():
@@ -1139,11 +1185,26 @@ class TargetNavigator:
             if selected_target is not None:
                 return selected_target
 
-        # After three right turns followed by three left
-        # turns, the robot should be approximately back
-        # at its original heading.
-        return None
+        # --------------------------------
+        # NOTHING FOUND:
+        # RETURN TO ORIGINAL HEADING
+        # --------------------------------
 
+        if self.stop_event.is_set():
+            return None
+
+        self.status = "RETURNING_SEARCH_TO_CENTER"
+        self.last_action = (
+            "SEARCH_RETURN_TO_CENTER_RIGHT "
+            f"{self.SEARCH_RETURN_TO_CENTER_DEGREES}"
+        )
+
+        self._search_turn(
+            "RIGHT",
+            self.SEARCH_RETURN_TO_CENTER_DEGREES,
+        )
+
+        return None
     def _distance_is_unreliable(
         self,
         distance_cm: Optional[float],

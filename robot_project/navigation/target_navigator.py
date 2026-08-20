@@ -82,9 +82,9 @@ class TargetNavigator:
     MIN_EXECUTABLE_TURN_DEGREES = 1.0
     RETURN_DURATION_SCALE = 0.5
 
-    BIN_SEARCH_UPDATE_DELAY_SECONDS = 0.25
-    MAX_BIN_SEARCH_UPDATES = 40
-    REQUIRED_BIN_DETECTIONS = 3
+   
+    
+   
 
 
     BIN_CENTER_TOLERANCE_PX = 45
@@ -101,6 +101,12 @@ class TargetNavigator:
     BIN_ALIGNMENT_TURN_DEGREES = 3
     BIN_ALIGNMENT_DELAY_SECONDS = 0.25
     MAX_BIN_ALIGNMENT_UPDATES = 120
+
+    BIN_SEARCH_UPDATE_DELAY_SECONDS = 0.25
+    MAX_BIN_SEARCH_UPDATES = 10
+    REQUIRED_BIN_DETECTIONS = 3
+
+    BIN_SCAN_SETTLE_SECONDS = 0.75
 
     BIN_RELEASE_DISTANCE_CM = 10.0
     BIN_EMERGENCY_DISTANCE_CM = 5.0
@@ -1568,9 +1574,9 @@ class TargetNavigator:
         # the original direction.
         search_turns = [
             None,
-            ("TURN_RIGHT", 6),
-            ("TURN_LEFT", 12),
-            ("TURN_RIGHT", 6),
+            ("TURN_RIGHT", 30),
+            ("TURN_LEFT", 60),
+            ("TURN_RIGHT", 30),
         ]
 
         for search_step, turn_instruction in enumerate(search_turns):
@@ -1602,7 +1608,7 @@ class TargetNavigator:
                     )
 
                 time.sleep(
-                    self.BIN_ALIGNMENT_DELAY_SECONDS
+                    self.BIN_SCAN_SETTLE_SECONDS
                 )
 
             consecutive_detections = 0

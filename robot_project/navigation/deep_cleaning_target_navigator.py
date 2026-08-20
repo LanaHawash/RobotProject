@@ -26,6 +26,10 @@ class DeepCleaningTargetNavigator(TargetNavigator):
         self.deep_cleaning_bins_direction = None
         self.deep_cleaning_sort_result = None
 
+        self.deep_cleaning_return_route = []
+        self.deep_cleaning_return_steps_completed = 0
+        self.deep_cleaning_return_complete = False
+
         # Prevent two cleaning interruptions from starting at once.
         self.deep_cleaning_sort_lock = threading.Lock()
 
@@ -35,6 +39,9 @@ class DeepCleaningTargetNavigator(TargetNavigator):
         self.deep_cleaning_lane_number = None
         self.deep_cleaning_bins_direction = None
         self.deep_cleaning_sort_result = None
+        self.deep_cleaning_return_route = []
+        self.deep_cleaning_return_steps_completed = 0
+        self.deep_cleaning_return_complete = False
 
         super().start(selected_target)
 
@@ -77,6 +84,9 @@ class DeepCleaningTargetNavigator(TargetNavigator):
                 else "AHEAD"
             )
             self.deep_cleaning_sort_result = None
+            self.deep_cleaning_return_route = []
+            self.deep_cleaning_return_steps_completed = 0
+            self.deep_cleaning_return_complete = False
 
             # Base start() clears MovementHistory. In this mode that is
             # intentional: the lane interruption point becomes the local
@@ -175,20 +185,31 @@ class DeepCleaningTargetNavigator(TargetNavigator):
                 "Deep-cleaning lane number is not available."
             )
 
-        bins_direction = (
-            "BEHIND"
-            if lane_number % 2 == 1
-            else "AHEAD"
-        )
-        self.deep_cleaning_bins_direction = bins_direction
+        bins_direction = self.deep_cleaning_bins_direction
 
-        # MovementHistory heading 0 is the lane heading at the exact
-        # interruption point. Therefore bins are heading 0 on even
-        # lanes and heading 180 on odd lanes.
-        pose = self.history.estimate_pose(
-            self.CM_PER_MS
+        if bins_direction not in {
+            "AHEAD",
+            "BEHIND",
+        }:
+            raise RuntimeError(
+                "Deep-cleaning bins direction is not available."
+            )
+
+        lane_travel_direction = (
+            "AWAY_FROM_BINS"
+            if lane_number % 2 == 1
+            else "TOWARD_BINS"
         )
-        self.last_pose = pose
+
+        # Heading 0 is always the heading of the interrupted lane.
+        #
+        # We intentionally calculate only heading from the real
+        # gyro-recorded turns. We do NOT use TargetNavigator's
+        # return-home position estimation here.
+        current_heading = (
+            self._current_recorded_heading_degrees()
+        )
+
 
         desired_bins_heading = (
             180.0
@@ -198,7 +219,7 @@ class DeepCleaningTargetNavigator(TargetNavigator):
 
         turn_to_bins = self._normalize_angle(
             desired_bins_heading
-            - pose["heading_degrees"]
+            - current_heading
         )
 
         self.status = "FACING_BINS_FROM_LANE"
@@ -209,7 +230,9 @@ class DeepCleaningTargetNavigator(TargetNavigator):
             f"TURN_DEGREES={turn_to_bins:.1f}"
         )
 
-        self._execute_turn(turn_to_bins)
+        self._execute_turn(
+            turn_to_bins
+        )
 
         if self.stop_event.is_set():
             return
@@ -221,7 +244,7 @@ class DeepCleaningTargetNavigator(TargetNavigator):
             f"DIRECTION={bins_direction}"
         )
 
-        # Reuse the existing color-bin sequence unchanged.
+        # Existing bin behavior remains unchanged.
         self._find_locked_bin()
         self._align_with_locked_bin()
         self._approach_locked_bin()
@@ -230,24 +253,16 @@ class DeepCleaningTargetNavigator(TargetNavigator):
         if self.stop_event.is_set():
             return
 
-        # Make enough room to turn away from the bin.
-        actual_duration = self.arduino.backward(300)
-
-        self.history.record_linear(
-            command="BACKWARD",
-            duration_ms=actual_duration,
-            source="BIN_EXIT",
+        # IMPORTANT:
+        # Do NOT call TargetNavigator._return_to_start().
+        #
+        # Do NOT make an extra BACKWARD 300 movement.
+        #
+        # Reverse the actual movements that were recorded
+        # since the lane interruption point.
+        return_steps = (
+            self._return_to_interrupted_lane_by_exact_replay()
         )
-
-        # Because history started at the lane interruption, this returns
-        # there rather than to the global room start.
-        self.status = "RETURNING_TO_INTERRUPTED_LANE"
-        self._return_to_start()
-
-        if self.stop_event.is_set():
-            return
-
-        self._restore_interrupted_lane_heading()
 
         if self.stop_event.is_set():
             return
@@ -255,38 +270,382 @@ class DeepCleaningTargetNavigator(TargetNavigator):
         self.status = "DEEP_CLEANING_SORT_COMPLETE"
         self.last_action = (
             "RETURNED_TO_INTERRUPTED_LANE "
-            f"LANE={lane_number}"
+            f"LANE={lane_number} "
+            f"RETURN_STEPS={return_steps}"
         )
 
         self.deep_cleaning_sort_result = {
             "success": True,
             "lane_number": lane_number,
             "bins_direction": bins_direction,
-            "object_class": self.locked_object_class,
-            "destination": self.locked_destination,
-            "bin_color": self.locked_bin_color,
+            "lane_travel_direction": (
+                lane_travel_direction
+            ),
+            "object_class": (
+                self.locked_object_class
+            ),
+            "destination": (
+                self.locked_destination
+            ),
+            "bin_color": (
+                self.locked_bin_color
+            ),
+            "returned_to_lane": True,
+            "lane_heading_restored": True,
+            "return_policy": (
+                "EXACT_REVERSE_REPLAY"
+            ),
+            "return_route_steps": (
+                return_steps
+            ),
         }
 
         print(
             "Deep-cleaning sorting interruption complete. "
-            f"Lane {lane_number} can resume."
+            f"Returned to lane {lane_number} "
+            "with heading restored. "
+            f"Travel direction: "
+            f"{lane_travel_direction}."
         )
 
-    def _restore_interrupted_lane_heading(self) -> None:
-        """Restore heading 0 of the local interruption coordinate frame."""
-        pose = self.history.estimate_pose(
-            self.CM_PER_MS
-        )
-        self.last_pose = pose
 
-        turn_to_lane = self._normalize_angle(
-            -pose["heading_degrees"]
+    def _current_recorded_heading_degrees(
+        self,
+    ) -> float:
+        """
+        Return the robot's current heading relative to the
+        interrupted lane heading.
+
+        The interrupted lane heading is always local heading 0.
+
+        Only gyro-measured turns affect heading. Linear movement
+        does not matter here.
+        """
+        heading_degrees = 0.0
+
+        for movement in self.history.snapshot():
+            command = movement.get(
+                "command"
+            )
+
+            if command == "TURN_RIGHT":
+                heading_degrees += float(
+                    movement["angle"]
+                )
+
+            elif command == "TURN_LEFT":
+                heading_degrees -= float(
+                    movement["angle"]
+                )
+
+        return self._normalize_angle(
+            heading_degrees
+        )    
+
+    def _build_exact_reverse_route(
+        self,
+    ) -> list[dict]:
+        """
+        Build the literal inverse of every recorded movement.
+
+        Unlike MovementHistory.inverse_route(), this uses the
+        raw snapshot and does not simplify or combine movements.
+        """
+        reverse_route = []
+
+        movements = (
+            self.history.snapshot()
         )
 
-        self.status = "RESTORING_INTERRUPTED_LANE_HEADING"
-        self.last_action = (
-            "RESTORE_LANE_HEADING "
-            f"TURN_DEGREES={turn_to_lane:.1f}"
+        for movement in reversed(
+            movements
+        ):
+            command = movement.get(
+                "command"
+            )
+
+            if command in {
+                "FORWARD",
+                "BACKWARD",
+            }:
+                duration_ms = int(
+                    movement["duration_ms"]
+                )
+
+                if duration_ms <= 0:
+                    raise RuntimeError(
+                        "Invalid recorded movement duration "
+                        "during deep-cleaning return: "
+                        f"{duration_ms} ms."
+                    )
+
+                reverse_command = (
+                    "BACKWARD"
+                    if command == "FORWARD"
+                    else "FORWARD"
+                )
+
+                remaining_ms = duration_ms
+
+                while remaining_ms > 0:
+                    chunk_ms = min(
+                        remaining_ms,
+                        5000,
+                    )
+
+                    reverse_route.append(
+                        {
+                            "command": reverse_command,
+                            "duration_ms": chunk_ms,
+                            "source": movement.get(
+                                "source",
+                                "NAVIGATION",
+                            ),
+                        }
+                    )
+
+                    remaining_ms -= chunk_ms
+
+                continue
+
+            if command in {
+                "TURN_LEFT",
+                "TURN_RIGHT",
+            }:
+                angle = float(
+                    movement["angle"]
+                )
+
+                if angle <= 0.0:
+                    raise RuntimeError(
+                        "Invalid recorded turn angle "
+                        "during deep-cleaning return: "
+                        f"{angle} degrees."
+                    )
+
+                reverse_command = (
+                    "TURN_RIGHT"
+                    if command == "TURN_LEFT"
+                    else "TURN_LEFT"
+                )
+
+                remaining_angle = angle
+
+                while (
+                    remaining_angle
+                    >= self.MIN_EXECUTABLE_TURN_DEGREES
+                ):
+                    chunk_angle = min(
+                        remaining_angle,
+                        180.0,
+                    )
+
+                    reverse_route.append(
+                        {
+                            "command": reverse_command,
+                            "angle": chunk_angle,
+                            "source": movement.get(
+                                "source",
+                                "NAVIGATION",
+                            ),
+                        }
+                    )
+
+                    remaining_angle -= chunk_angle
+
+                if remaining_angle > 0.0:
+                    print(
+                        "Deep-cleaning reverse route: "
+                        "ignoring residual non-executable "
+                        f"turn of {remaining_angle:.2f} degrees."
+                    )
+
+                continue
+
+              
+
+            raise RuntimeError(
+                "Unsupported movement in "
+                "deep-cleaning history: "
+                f"{movement}"
+            )
+
+        return reverse_route
+
+
+
+    def _return_to_interrupted_lane_by_exact_replay(
+        self,
+    ) -> int:
+        """
+        Physically retrace the complete deep-cleaning sorting
+        route back to the lane interruption point.
+
+        Replay movements are intentionally NOT written back into
+        MovementHistory. The history remains the outbound route
+        until the complete return succeeds.
+        """
+        lane_number = (
+            self.deep_cleaning_lane_number
         )
 
-        self._execute_turn(turn_to_lane)
+        if lane_number is None:
+            raise RuntimeError(
+                "Cannot return because the interrupted "
+                "lane number is missing."
+            )
+
+        reverse_route = (
+            self._build_exact_reverse_route()
+        )
+
+        if not reverse_route:
+            raise RuntimeError(
+                "Cannot return to the interrupted lane "
+                "because movement history is empty."
+            )
+
+        self.deep_cleaning_return_route = [
+            movement.copy()
+            for movement in reverse_route
+        ]
+
+        self.deep_cleaning_return_steps_completed = 0
+        self.deep_cleaning_return_complete = False
+
+        print(
+            "Deep-cleaning exact reverse route: "
+            f"lane={lane_number}, "
+            f"steps={len(reverse_route)}"
+        )
+
+        for index, movement in enumerate(
+            reverse_route,
+            start=1,
+        ):
+            if self.stop_event.is_set():
+                self.arduino.stop()
+
+                return (
+                    self
+                    .deep_cleaning_return_steps_completed
+                )
+
+            command = movement[
+                "command"
+            ]
+
+            self.status = (
+                "RETURNING_TO_INTERRUPTED_LANE_"
+                f"{lane_number}"
+            )
+
+            if command in {
+                "FORWARD",
+                "BACKWARD",
+            }:
+                duration_ms = movement[
+                    "duration_ms"
+                ]
+
+                self.last_action = (
+                    "REVERSE_ROUTE_STEP "
+                    f"{index}/"
+                    f"{len(reverse_route)} "
+                    f"LANE={lane_number} "
+                    f"{command} "
+                    f"{duration_ms}"
+                )
+
+                print(
+                    "Deep-cleaning return: "
+                    f"lane={lane_number}, "
+                    f"step={index}/"
+                    f"{len(reverse_route)}, "
+                    f"{command} "
+                    f"{duration_ms} ms"
+                )
+
+                if command == "FORWARD":
+                    self.arduino.forward(
+                        duration_ms
+                    )
+
+                else:
+                    self.arduino.backward(
+                        duration_ms
+                    )
+
+            elif command in {
+                "TURN_LEFT",
+                "TURN_RIGHT",
+            }:
+                angle = movement[
+                    "angle"
+                ]
+
+                self.last_action = (
+                    "REVERSE_ROUTE_STEP "
+                    f"{index}/"
+                    f"{len(reverse_route)} "
+                    f"LANE={lane_number} "
+                    f"{command} "
+                    f"{angle:.2f}"
+                )
+
+                print(
+                    "Deep-cleaning return: "
+                    f"lane={lane_number}, "
+                    f"step={index}/"
+                    f"{len(reverse_route)}, "
+                    f"{command} "
+                    f"{angle:.2f} degrees"
+                )
+
+                if command == "TURN_LEFT":
+                    self.arduino.turn_left(
+                        angle
+                    )
+
+                else:
+                    self.arduino.turn_right(
+                        angle
+                    )
+
+            else:
+                raise RuntimeError(
+                    "Unsupported reverse-route "
+                    f"command: {command}"
+                )
+
+            self.deep_cleaning_return_steps_completed = (
+                index
+            )
+
+        self.arduino.stop()
+
+        self.deep_cleaning_return_complete = True
+
+        # IMPORTANT:
+        # Clear only after every return command succeeds.
+        #
+        # If a return command fails halfway through, preserving
+        # the original history makes the failure diagnosable.
+        self.history.clear()
+
+        # Do not invent a dead-reckoning pose. The successful
+        # reverse replay defines the logical return to the
+        # interruption origin.
+        self.last_pose = None
+
+        print(
+            "Deep-cleaning exact reverse complete: "
+            f"lane={lane_number}, "
+            f"steps={len(reverse_route)}"
+        )
+
+        return len(
+            reverse_route
+        )
+
+   

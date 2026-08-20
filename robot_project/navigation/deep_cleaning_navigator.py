@@ -42,7 +42,7 @@ class DeepCleaningNavigator:
     BEFORE_SHIFT_SETTLE_SECONDS = 1.0
     AFTER_SHIFT_SETTLE_SECONDS = 2.0
 
-    MAX_LANES = 4
+    MAX_LANES = 3
 
     def __init__(
         self,
@@ -93,6 +93,7 @@ class DeepCleaningNavigator:
 
         self.object_sorting_active = False
         self.interrupted_lane_number = None
+        self.last_returned_lane_number = None
         self.last_sort_result = None
 
     def start(self) -> None:
@@ -126,6 +127,7 @@ class DeepCleaningNavigator:
 
             self.object_sorting_active = False
             self.interrupted_lane_number = None
+            self.last_returned_lane_number = None
             self.last_sort_result = None
 
         self.cleaning_thread = threading.Thread(
@@ -627,9 +629,14 @@ class DeepCleaningNavigator:
         finally:
             if self.clear_confirmed_target is not None:
                 self.clear_confirmed_target()
-
+            
             with self.state_lock:
                 self.object_sorting_active = False
+
+        self._validate_sort_return(
+            expected_lane_number=lane_number,
+            result=result,
+        )        
 
         with self.state_lock:
             self.last_sort_result = result.copy()
@@ -643,6 +650,187 @@ class DeepCleaningNavigator:
             )
 
         return result
+    def _validate_sort_return(
+        self,
+        expected_lane_number: int,
+        result: dict,
+    ) -> None:
+        """
+        Verify that an object-sorting interruption returned
+        to the same logical cleaning lane before allowing
+        zig-zag movement to resume.
+
+        Any mismatch is fail-closed: STOP and raise.
+        """
+        expected_bins_direction = (
+            "BEHIND"
+            if expected_lane_number % 2 == 1
+            else "AHEAD"
+        )
+
+        expected_travel_direction = (
+            "AWAY_FROM_BINS"
+            if expected_lane_number % 2 == 1
+            else "TOWARD_BINS"
+        )
+
+        with self.state_lock:
+            active_lane_number = (
+                self.lane_number
+            )
+
+            interrupted_lane_number = (
+                self.interrupted_lane_number
+            )
+
+        returned_lane_number = result.get(
+            "lane_number"
+        )
+
+        returned_bins_direction = result.get(
+            "bins_direction"
+        )
+
+        returned_travel_direction = result.get(
+            "lane_travel_direction"
+        )
+
+        if (
+            active_lane_number
+            != expected_lane_number
+        ):
+            self.arduino.stop()
+
+            raise RuntimeError(
+                "Deep-cleaning lane state changed "
+                "during object sorting: "
+                f"expected lane "
+                f"{expected_lane_number}, "
+                f"active lane "
+                f"{active_lane_number}."
+            )
+
+        if (
+            interrupted_lane_number
+            != expected_lane_number
+        ):
+            self.arduino.stop()
+
+            raise RuntimeError(
+                "Deep-cleaning interrupted-lane "
+                "state does not match the active lane: "
+                f"expected lane "
+                f"{expected_lane_number}, "
+                f"stored interruption lane "
+                f"{interrupted_lane_number}."
+            )
+
+        if (
+            returned_lane_number
+            != expected_lane_number
+        ):
+            self.arduino.stop()
+
+            raise RuntimeError(
+                "Deep-cleaning sorter returned "
+                "the wrong lane identity: "
+                f"expected lane "
+                f"{expected_lane_number}, "
+                f"returned lane "
+                f"{returned_lane_number}."
+            )
+
+        if (
+            returned_bins_direction
+            != expected_bins_direction
+        ):
+            self.arduino.stop()
+
+            raise RuntimeError(
+                "Deep-cleaning sorter returned "
+                "the wrong bins direction: "
+                f"expected "
+                f"{expected_bins_direction}, "
+                f"returned "
+                f"{returned_bins_direction}."
+            )
+
+        if (
+            returned_travel_direction
+            != expected_travel_direction
+        ):
+            self.arduino.stop()
+
+            raise RuntimeError(
+                "Deep-cleaning sorter returned "
+                "the wrong lane travel direction: "
+                f"expected "
+                f"{expected_travel_direction}, "
+                f"returned "
+                f"{returned_travel_direction}."
+            )
+
+        if (
+            result.get("returned_to_lane")
+            is not True
+        ):
+            self.arduino.stop()
+
+            raise RuntimeError(
+                "Deep-cleaning sorter did not "
+                "confirm return to the "
+                "interrupted lane."
+            )
+
+        if (
+            result.get(
+                "lane_heading_restored"
+            )
+            is not True
+        ):
+            self.arduino.stop()
+
+            raise RuntimeError(
+                "Deep-cleaning sorter did not "
+                "confirm restoration of the "
+                "lane heading."
+            )
+
+        if (
+            result.get("return_policy")
+            != "EXACT_REVERSE_REPLAY"
+        ):
+            self.arduino.stop()
+
+            raise RuntimeError(
+                "Deep-cleaning sorter used an "
+                "unexpected return policy."
+            )
+
+        with self.state_lock:
+            self.last_returned_lane_number = (
+                expected_lane_number
+            )
+
+            # The sorting interruption is finished.
+            self.interrupted_lane_number = None
+
+            # Reassert the lane context that belongs
+            # to this lane.
+            self.bins_direction = (
+                expected_bins_direction
+            )
+
+            self.lane_travel_direction = (
+                expected_travel_direction
+            )
+
+        print(
+            "Deep-cleaning lane return verified: "
+            f"lane={expected_lane_number}, "
+            f"bins={expected_bins_direction}, "
+            f"travel={expected_travel_direction}."
+        )
 
     def _transition_to_next_lane(self) -> bool:
         with self.state_lock:
@@ -871,6 +1059,9 @@ class DeepCleaningNavigator:
                 ),
                 "interrupted_lane_number": (
                     self.interrupted_lane_number
+                ),
+                "last_returned_lane_number": (
+                    self.last_returned_lane_number
                 ),
                 "last_sort_result": (
                     self.last_sort_result.copy()

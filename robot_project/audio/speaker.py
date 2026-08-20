@@ -1,6 +1,8 @@
+from concurrent.futures import process
 import random
 import subprocess
 import threading
+import numpy as np
 
 from robot_project.audio.config import (
     BABY_LULLABY_PATHS,
@@ -101,7 +103,6 @@ class Speaker:
             self.talk_process = subprocess.Popen(
                 [
                     "aplay",
-                    "-q",
                     "-t", "raw",
                     "-f", "S16_LE",
                     "-r", "16000",
@@ -109,24 +110,67 @@ class Speaker:
                 ],
                 stdin=subprocess.PIPE,
             )
+            print(
+            f"aplay started with PID: "
+            f"{self.talk_process.pid}"
+        )
 
     def write_live_audio(self, audio_data: bytes) -> None:
-        with self.talk_lock:
-            process = self.talk_process
+     with self.talk_lock:
+        process = self.talk_process
 
-            if (
-                process is None
-                or process.stdin is None
-                or process.poll() is not None
-            ):
-                return
+        print(
+            f"Speaker received {len(audio_data)} bytes"
+        )
 
-            try:
-                process.stdin.write(audio_data)
-                process.stdin.flush()
+        if process is None:
+            print("ERROR: aplay process is None")
+            return
 
-            except (BrokenPipeError, OSError):
-                pass
+        if process.stdin is None:
+            print("ERROR: aplay stdin is None")
+            return
+
+        return_code = process.poll()
+
+        if return_code is not None:
+            print(
+                f"ERROR: aplay stopped. "
+                f"Return code: {return_code}"
+            )
+            return
+
+        try:
+            # samples = np.frombuffer(
+            #     audio_data,
+            #     dtype="<i2",
+            # ).astype(np.int32)
+
+            # if len(samples) > 0:
+            #     peak = int(np.max(np.abs(samples)))
+
+            #     rms = int(
+            #         np.sqrt(
+            #             np.mean(
+            #                 samples.astype(np.float64) ** 2
+            #             )
+            #         )
+            #     )
+
+            #     print(
+            #         f"PHONE AUDIO: peak={peak}, rms={rms}"
+            #     )
+            process.stdin.write(audio_data)
+            process.stdin.flush()
+
+            print(
+                f"Wrote {len(audio_data)} bytes to aplay"
+            )
+
+        except (BrokenPipeError, OSError) as error:
+            print(
+                f"ERROR writing audio to aplay: {error}"
+            )
 
 
             

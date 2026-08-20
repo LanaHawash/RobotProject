@@ -44,7 +44,7 @@ CRY_WINDOW_SAMPLES = int(
 )
 
 # Initial value only. We will tune this with real audio.
-BABY_CRY_THRESHOLD = 0.25
+BABY_CRY_THRESHOLD = 0.6
 
 AUDIO_CHUNK_SAMPLES =1280
 

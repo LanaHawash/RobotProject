@@ -1,5 +1,6 @@
 import random
 import subprocess
+import threading
 
 from robot_project.audio.config import (
     BABY_LULLABY_PATHS,
@@ -14,17 +15,14 @@ class Speaker:
 
     def __init__(self):
         self.playing = False
+        self.talk_process = None
+        self.talk_lock = threading.Lock()
 
-    def speak(
-        self,
-        text: str,
-    ) -> None:
+    def speak(self, text: str) -> None:
         if not text:
             return
 
-        print(
-            f"Robot speaking: {text}"
-        )
+        print(f"Robot speaking: {text}")
 
         self.playing = True
 
@@ -48,18 +46,14 @@ class Speaker:
             self.playing = False
 
     def play_baby_lullaby(self) -> None:
-        song_path = random.choice(
-            BABY_LULLABY_PATHS
-        )
+        song_path = random.choice(BABY_LULLABY_PATHS)
 
         if not song_path.exists():
             raise FileNotFoundError(
                 f"Baby song not found: {song_path}"
             )
 
-        print(
-            f"Playing baby song: {song_path.name}"
-        )
+        print(f"Playing baby song: {song_path.name}")
 
         self.playing = True
 
@@ -90,3 +84,84 @@ class Speaker:
 
     def is_playing(self) -> bool:
         return self.playing
+
+    # ---------------------------------------------------------
+    # LIVE TALK
+    # ---------------------------------------------------------
+
+    def start_live_talk(self) -> None:
+        with self.talk_lock:
+            if self.talk_process is not None:
+                return
+
+            print("Starting live talk speaker.")
+
+            self.playing = True
+
+            self.talk_process = subprocess.Popen(
+                [
+                    "aplay",
+                    "-q",
+                    "-t", "raw",
+                    "-f", "S16_LE",
+                    "-r", "16000",
+                    "-c", "1",
+                ],
+                stdin=subprocess.PIPE,
+            )
+
+    def write_live_audio(self, audio_data: bytes) -> None:
+        with self.talk_lock:
+            process = self.talk_process
+
+            if (
+                process is None
+                or process.stdin is None
+                or process.poll() is not None
+            ):
+                return
+
+            try:
+                process.stdin.write(audio_data)
+                process.stdin.flush()
+
+            except (BrokenPipeError, OSError):
+                pass
+
+
+            
+    def stop_live_talk(self) -> None:
+        with self.talk_lock:
+            process = self.talk_process
+
+            if process is None:
+                return
+
+            print("Stopping live talk speaker.")
+
+            try:
+                # Closing stdin tells aplay that the raw audio
+                # stream has ended normally.
+                if process.stdin is not None:
+                    try:
+                        process.stdin.close()
+                    except (BrokenPipeError, OSError):
+                        pass
+
+                # Give aplay a chance to exit cleanly first.
+                try:
+                    process.wait(timeout=1.0)
+
+                except subprocess.TimeoutExpired:
+                    process.terminate()
+
+                    try:
+                        process.wait(timeout=2.0)
+
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+
+            finally:
+                self.talk_process = None
+                self.playing = False

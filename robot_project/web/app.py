@@ -5,7 +5,7 @@ import signal
 
 import cv2
 from flask import Flask, Response
-
+from flask_sock import Sock
 from robot_project.camera.fps import FPS
 from robot_project.camera.pipeline import CameraPipeline
 from robot_project.detection.detector import Detector
@@ -15,6 +15,9 @@ from robot_project.hardware.arduino_controller import (
 )
 from robot_project.navigation.target_navigator import (
     TargetNavigator,
+)
+from robot_project.navigation.deep_cleaning_target_navigator import (
+    DeepCleaningTargetNavigator,
 )
 
 from robot_project.navigation.deep_cleaning_navigator import (
@@ -46,7 +49,7 @@ arduino_error = None
 microphone = Microphone()
 audio_service = AudioService()
 speaker = Speaker()
-
+sock = Sock(app)
 firebase_ready = False
 FCM_DEVICE_TOKEN = "fV05MFkRTNOhf0hvodcrSJ:APA91bFGGdlKzGEgYT-Cdw8A65EXS6Y3BD_vuFCqkC9SRJYUrmHyzr8j-MC4sFXb5hYw-t3Tkr2NHmhQoy8dHU1E6hXokSZnsqT-9odPjz31sAc-XRFJquk"
 
@@ -173,7 +176,20 @@ def get_raw_frame():
         return latest_raw_frame.copy()
 
 
+# IMPORTANT:
+# `navigator` remains the ORIGINAL TargetNavigator.
+# All /navigation/* behavior continues to use this object unchanged.
 navigator = TargetNavigator(
+    arduino=arduino,
+    get_target=get_navigation_target,
+    get_raw_frame=get_raw_frame,
+    get_confirmed_target=get_confirmed_target,
+    clear_confirmed_target=clear_confirmed_target,
+)
+
+# Separate navigator used ONLY when deep cleaning is interrupted
+# by a confirmed object. It never replaces `navigator`.
+deep_cleaning_sorter = DeepCleaningTargetNavigator(
     arduino=arduino,
     get_target=get_navigation_target,
     get_raw_frame=get_raw_frame,
@@ -183,6 +199,10 @@ navigator = TargetNavigator(
 
 deep_cleaning = DeepCleaningNavigator(
     arduino=arduino,
+    get_confirmed_target=get_confirmed_target,
+    clear_confirmed_target=clear_confirmed_target,
+    sort_object=deep_cleaning_sorter.sort_for_deep_cleaning,
+    stop_sorting=deep_cleaning_sorter.stop,
 )
 
 
@@ -314,10 +334,16 @@ def camera_processing_loop():
             raw_frame = rgb_message.getCvFrame()
             depth_frame = depth_message.getCvFrame()
 
+            if shutdown_complete or not camera.is_running():
+                break
+
             detections, annotated_frame = detector.detect(
                 raw_frame,
                 depth_frame,
             )
+
+            if shutdown_complete:
+                break
 
             manager.update(detections)
 
@@ -339,16 +365,35 @@ def camera_processing_loop():
             # matching selected-target and navigation-target data.
             eligible_detections = detections
 
+            # Preserve the original standalone navigation behavior:
+            # when `navigator` is running, follow its locked class exactly
+            # as before. During a deep-cleaning object interruption, the
+            # separate deep_cleaning_sorter gets the same locked-class
+            # filtering.
+            active_locked_object_class = None
+
             if (
                 navigator.is_running()
                 and navigator.locked_object_class
             ):
+                active_locked_object_class = (
+                    navigator.locked_object_class
+                )
+            elif (
+                deep_cleaning_sorter.is_running()
+                and deep_cleaning_sorter.locked_object_class
+            ):
+                active_locked_object_class = (
+                    deep_cleaning_sorter.locked_object_class
+                )
+
+            if active_locked_object_class:
                 eligible_detections = [
                     detection
                     for detection in detections
                     if (
                         detection["class"]
-                        == navigator.locked_object_class
+                        == active_locked_object_class
                     )
                 ]
 
@@ -912,6 +957,49 @@ def depth():
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
+@sock.route("/audio/talk")
+def audio_talk(ws):
+    print("Live talk connected.")
+
+    microphone_was_running = microphone.is_running()
+
+    try:
+        if microphone_was_running:
+            print("Stopping robot microphone for live talk.")
+            microphone.stop()
+
+        speaker.start_live_talk()
+
+        while True:
+            audio_data = ws.receive()
+
+            if audio_data is None:
+                break
+
+            if isinstance(audio_data, bytes):
+                speaker.write_live_audio(audio_data)
+
+    except Exception as error:
+        print(f"Live talk error: {error}")
+
+    finally:
+        speaker.stop_live_talk()
+
+        try:
+            audio_service.reset()
+        except Exception as error:
+            print(f"Audio reset error after talk: {error}")
+
+        if microphone_was_running and not shutdown_complete:
+            try:
+                microphone.start()
+                print("Live talk ended. Robot microphone restarted.")
+            except Exception as error:
+                print(
+                    f"Microphone restart error after live talk: {error}"
+                )
+
+        print("Live talk disconnected.")
 
 @app.route("/capture")
 def capture():
@@ -1365,12 +1453,12 @@ def start_system():
 
         processing_thread = threading.Thread(
             target=camera_processing_loop,
-            daemon=True,
+            daemon=False,
         )
 
         audio_thread = threading.Thread(
             target=audio_processing_loop,
-            daemon=True,
+            daemon=False,
         )
 
         processing_thread.start()
@@ -1454,14 +1542,35 @@ def shutdown_system():
     ):
         navigation_thread.join(timeout=5.0)
     
+    # Deep-cleaning object sorting uses a separate TargetNavigator
+    # instance. Wait for its thread too before closing Arduino serial.
+    deep_cleaning_sort_thread = (
+        deep_cleaning_sorter.navigation_thread
+    )
+
+    if (
+        deep_cleaning_sort_thread is not None
+        and deep_cleaning_sort_thread.is_alive()
+        and deep_cleaning_sort_thread
+        is not threading.current_thread()
+    ):
+        deep_cleaning_sort_thread.join(timeout=5.0)
+
     # Allow the camera-processing thread to finish.
     if (
         processing_thread is not None
         and processing_thread.is_alive()
-        and processing_thread
-        is not threading.current_thread()
+        and processing_thread is not threading.current_thread()
     ):
-        processing_thread.join(timeout=3.0)
+        processing_thread.join(timeout=10.0)
+
+        if processing_thread.is_alive():
+            print(
+                "WARNING: Camera processing thread "
+                "did not stop within 10 seconds."
+            )
+        else:
+            print("Camera processing thread joined successfully.")
 
     cleaning_thread = deep_cleaning.cleaning_thread
 
@@ -1507,4 +1616,3 @@ def handle_shutdown_signal(
 ):
     shutdown_system()
     raise SystemExit(0)
-

@@ -106,7 +106,18 @@ class TargetNavigator:
     MAX_BIN_SEARCH_UPDATES = 10
     REQUIRED_BIN_DETECTIONS = 3
 
+    # Bin discovery scans the full area behind the robot from
+    # 90 degrees right to 90 degrees left, in 30-degree steps.
+    BIN_SEARCH_STEP_DEGREES = 30.0
+    BIN_SEARCH_MAX_OFFSET_DEGREES = 90.0
     BIN_SCAN_SETTLE_SECONDS = 0.75
+
+    # If a previously visible bin disappears during fine alignment,
+    # perform a wider local sweep around the current heading instead
+    # of the old 6/12/6-degree recovery.
+    BIN_ALIGNMENT_RECOVERY_STEP_DEGREES = 5.0
+    BIN_ALIGNMENT_RECOVERY_MAX_OFFSET_DEGREES = 20.0
+    BIN_ALIGNMENT_RECOVERY_CHECKS_PER_STEP = 3
 
     BIN_RELEASE_DISTANCE_CM = 10.0
     BIN_EMERGENCY_DISTANCE_CM = 5.0
@@ -114,18 +125,31 @@ class TargetNavigator:
     BIN_FAR_DISTANCE_CM = 45.0
     BIN_MEDIUM_DISTANCE_CM = 25.0
 
-    BIN_FAR_FORWARD_MS = 180
-    BIN_MEDIUM_FORWARD_MS = 100
-    BIN_CLOSE_FORWARD_MS = 50
+    # Bin approach is intentionally pulse-based. The bins can sit beside
+    # one another, so the camera must re-confirm the locked color after
+    # every short movement instead of driving continuously toward whatever
+    # the front ultrasonic sensor happens to see.
+    BIN_FAR_FORWARD_MS = 120
+    BIN_MEDIUM_FORWARD_MS = 80
+    BIN_CLOSE_FORWARD_MS = 40
 
-    MAX_BIN_APPROACH_UPDATES = 100
+    # Keep the locked-color bin tighter to the camera center while walking.
+    BIN_APPROACH_ALIGNMENT_TOLERANCE_PX = 55
+    BIN_APPROACH_REALIGN_DEGREES = 1
+
+    # A close ultrasonic reading is accepted as the destination bin only
+    # when the locked-color blob is also centered and visibly close.
+    BIN_RELEASE_VISUAL_CENTER_TOLERANCE_PX = 45
+    MAX_BIN_CLOSE_UNCONFIRMED_UPDATES = 8
+
+    MAX_BIN_APPROACH_UPDATES = 140
     BIN_APPROACH_DELAY_SECONDS = 0.20
     MAX_BIN_LOST_UPDATES = 8
     MAX_BIN_ALIGNMENT_LOST_UPDATES = 8
 
     
 
-    NEXT_TARGET_CHECK_DELAY_SECONDS = 0.30
+    NEXT_TARGET_CHECK_DELAY_SECONDS = 2.0
 
     def __init__(
         self,
@@ -397,28 +421,90 @@ class TargetNavigator:
         )
 
         
+    def _wait_for_confirmed_target(
+        self,
+        duration_seconds: float,
+    ) -> Optional[dict]:
+        deadline = (
+            time.monotonic()
+            + duration_seconds
+        )
+
+        while (
+            not self.stop_event.is_set()
+            and time.monotonic() < deadline
+        ):
+            selected_target = (
+                self.get_confirmed_target()
+            )
+
+            if selected_target is not None:
+                return selected_target
+
+            time.sleep(0.10)
+
+        return None
 
 
     def _wait_for_next_confirmed_target(self) -> bool:
         """
-        Wait for the detector to confirm a new object, then lock it
-        automatically without requiring another Start button press.
+        Wait for a newly confirmed object.
+
+        First watch the current view while stationary.
+        If nothing appears, perform one physical scan.
+        After an unsuccessful scan, stop and wait before
+        trying again.
         """
+
         while not self.stop_event.is_set():
-            selected_target = (
-                self._search_for_confirmed_target()
+
+            # --------------------------------
+            # WATCH CURRENT VIEW FIRST
+            # --------------------------------
+
+            self.arduino.stop()
+
+            self.status = "WAITING_FOR_NEXT_TARGET"
+            self.last_action = (
+                "WATCHING_ENVIRONMENT"
             )
 
+            selected_target = (
+                self._wait_for_confirmed_target(
+                    3.0
+                )
+            )
+
+            # --------------------------------
+            # NOTHING STRAIGHT AHEAD:
+            # PERFORM ONE SEARCH
+            # --------------------------------
+
             if selected_target is None:
-                self.status = "WAITING_FOR_NEXT_TARGET"
-                self.last_action = (
-                    "SEARCH_COMPLETE_NO_TARGET"
+                selected_target = (
+                    self._search_for_confirmed_target()
                 )
 
-                time.sleep(
-                    self.NEXT_TARGET_CHECK_DELAY_SECONDS
+            # --------------------------------
+            # NOTHING FOUND
+            # --------------------------------
+
+            if selected_target is None:
+                self.arduino.stop()
+
+                self.status = "WAITING_FOR_NEXT_TARGET"
+                self.last_action = (
+                    "NO_TARGET_FOUND_WAITING"
                 )
+
+                # Stay stationary before another scan.
+                time.sleep(2.0)
+
                 continue
+
+            # --------------------------------
+            # NEW OBJECT FOUND
+            # --------------------------------
 
             self._lock_selected_target(
                 selected_target
@@ -432,7 +518,7 @@ class TargetNavigator:
 
             self.centered_updates = 0
             self.misaligned_updates = 0
-           
+
             self.last_ultrasonic_distance_cm = None
             self.close_range_mode = False
 
@@ -452,6 +538,7 @@ class TargetNavigator:
             return True
 
         return False
+
     def _navigation_loop(self) -> None:
         print("Target navigation started.")
 
@@ -1122,13 +1209,21 @@ class TargetNavigator:
         # CHECK ORIGINAL VIEW
         # --------------------------------
 
+        self.arduino.stop()
+
+        self.status = "WATCHING_FOR_TARGET"
+        self.last_action = (
+            "WATCHING_CURRENT_VIEW"
+        )
+
         selected_target = (
-            self.get_confirmed_target()
+            self._wait_for_confirmed_target(
+                3.0
+            )
         )
 
         if selected_target is not None:
             return selected_target
-
         # --------------------------------
         # SEARCH RIGHT
         # --------------------------------
@@ -1141,14 +1236,10 @@ class TargetNavigator:
 
             self._search_turn("RIGHT")
 
-            # Give the camera/detector time to observe
-            # the new direction before checking.
-            time.sleep(
-                self.SEARCH_DETECTION_PAUSE_SECONDS
-            )
-
             selected_target = (
-                self.get_confirmed_target()
+                self._wait_for_confirmed_target(
+                    self.SEARCH_DETECTION_PAUSE_SECONDS
+                )
             )
 
             if selected_target is not None:
@@ -1185,7 +1276,9 @@ class TargetNavigator:
             self._search_turn("LEFT")
 
             selected_target = (
-                self.get_confirmed_target()
+                self._wait_for_confirmed_target(
+                    self.SEARCH_DETECTION_PAUSE_SECONDS
+                )
             )
 
             if selected_target is not None:
@@ -1554,64 +1647,59 @@ class TargetNavigator:
 
     def _find_locked_bin(self) -> dict:
         """
-        Search for the locked-color bin.
+        Search widely for the locked-color bin.
 
-        The robot first checks the current camera view. If the bin is not
-        confirmed, it performs a small right/left scan before declaring
-        that the bin cannot be found.
+        Search pattern relative to the heading that faces the bins:
+
+            0 -> +30 -> +60 -> +90
+            return to 0
+            -30 -> -60 -> -90
+            return to 0 if nothing is found
+
+        This covers a full 180-degree field behind the robot while
+        still returning to the original heading when the search fails.
+        Every physical turn is recorded in MovementHistory.
         """
         if not self.locked_bin_color:
             raise RuntimeError(
                 "Cannot search for a bin because no bin color is locked."
             )
 
+        expected_bin_color = DESTINATION_BIN_COLORS.get(
+            self.locked_destination
+        )
+
+        if expected_bin_color != self.locked_bin_color:
+            raise RuntimeError(
+                "Locked bin state is inconsistent: "
+                f"destination={self.locked_destination}, "
+                f"locked_color={self.locked_bin_color}, "
+                f"expected_color={expected_bin_color}."
+            )
+
         self.status = "SEARCHING_FOR_BIN"
         self.current_bin_target = None
 
-        # Search directions:
-        # 0 degrees means the current direction.
-        # The later turns scan to both sides and finally return near
-        # the original direction.
-        search_turns = [
-            None,
-            ("TURN_RIGHT", 30),
-            ("TURN_LEFT", 60),
-            ("TURN_RIGHT", 30),
-        ]
+        print(
+            "Starting wide locked-bin search: "
+            f"destination={self.locked_destination}, "
+            f"color={self.locked_bin_color}"
+        )
 
-        for search_step, turn_instruction in enumerate(search_turns):
-            if self.stop_event.is_set():
-                raise RuntimeError(
-                    "Bin search was stopped."
-                )
+        max_side_steps = int(
+            self.BIN_SEARCH_MAX_OFFSET_DEGREES
+            / self.BIN_SEARCH_STEP_DEGREES
+        )
 
-            if turn_instruction is not None:
-                command, angle = turn_instruction
+        total_search_positions = 1 + (2 * max_side_steps)
+        search_position = 0
 
-                self.last_action = (
-                    f"SEARCH_BIN_SCAN {command} {angle}"
-                )
+        def check_current_heading() -> Optional[dict]:
+            nonlocal search_position
 
-                if command == "TURN_RIGHT":
-                    actual_angle = self.arduino.turn_right(angle)
-
-                    self.history.record_turn(
-                        command="TURN_RIGHT",
-                        angle=actual_angle,
-                    )
-                else:
-                    actual_angle = self.arduino.turn_left(angle)
-
-                    self.history.record_turn(
-                        command="TURN_LEFT",
-                        angle=actual_angle,
-                    )
-
-                time.sleep(
-                    self.BIN_SCAN_SETTLE_SECONDS
-                )
-
+            search_position += 1
             consecutive_detections = 0
+            latest_detection = None
 
             for _ in range(self.MAX_BIN_SEARCH_UPDATES):
                 if self.stop_event.is_set():
@@ -1628,16 +1716,18 @@ class TargetNavigator:
 
                 if detection is None:
                     consecutive_detections = 0
+                    latest_detection = None
                     self.current_bin_target = None
 
                     self.last_action = (
                         f"SEARCH_BIN COLOR={self.locked_bin_color} "
-                        f"STEP={search_step + 1}/"
-                        f"{len(search_turns)} "
+                        f"POSITION={search_position}/"
+                        f"{total_search_positions} "
                         "NOT_VISIBLE"
                     )
                 else:
                     consecutive_detections += 1
+                    latest_detection = detection
                     self.current_bin_target = detection
 
                     self.last_action = (
@@ -1671,20 +1761,219 @@ class TargetNavigator:
                     self.BIN_SEARCH_UPDATE_DELAY_SECONDS
                 )
 
+            return latest_detection if (
+                consecutive_detections
+                >= self.REQUIRED_BIN_DETECTIONS
+            ) else None
+
+        def turn_and_record(
+            command: str,
+            angle: float,
+            action: str,
+        ) -> None:
+            self.last_action = action
+
+            if command == "TURN_RIGHT":
+                actual_angle = self.arduino.turn_right(angle)
+            elif command == "TURN_LEFT":
+                actual_angle = self.arduino.turn_left(angle)
+            else:
+                raise ValueError(
+                    f"Unsupported bin-search turn: {command}"
+                )
+
+            self.history.record_turn(
+                command=command,
+                angle=actual_angle,
+            )
+
+            time.sleep(
+                self.BIN_SCAN_SETTLE_SECONDS
+            )
+
+        # Check straight ahead first.
+        detection = check_current_heading()
+        if detection is not None:
+            return detection
+
+        # Scan right in small increments to +90 degrees.
+        for step in range(1, max_side_steps + 1):
+            if self.stop_event.is_set():
+                raise RuntimeError(
+                    "Bin search was stopped."
+                )
+
+            turn_and_record(
+                "TURN_RIGHT",
+                self.BIN_SEARCH_STEP_DEGREES,
+                (
+                    "SEARCH_BIN_RIGHT "
+                    f"OFFSET={step * self.BIN_SEARCH_STEP_DEGREES:.0f}"
+                ),
+            )
+
+            detection = check_current_heading()
+            if detection is not None:
+                return detection
+
+        # Nothing on the right. Return exactly to the original
+        # bin-facing heading before scanning the left side.
+        turn_and_record(
+            "TURN_LEFT",
+            self.BIN_SEARCH_MAX_OFFSET_DEGREES,
+            "SEARCH_BIN_RETURN_CENTER_FROM_RIGHT",
+        )
+
+        # Scan left in small increments to -90 degrees.
+        for step in range(1, max_side_steps + 1):
+            if self.stop_event.is_set():
+                raise RuntimeError(
+                    "Bin search was stopped."
+                )
+
+            turn_and_record(
+                "TURN_LEFT",
+                self.BIN_SEARCH_STEP_DEGREES,
+                (
+                    "SEARCH_BIN_LEFT "
+                    f"OFFSET={step * self.BIN_SEARCH_STEP_DEGREES:.0f}"
+                ),
+            )
+
+            detection = check_current_heading()
+            if detection is not None:
+                return detection
+
+        # Search failed. Restore the original heading before raising
+        # the error so the robot never remains parked at -90 degrees.
+        turn_and_record(
+            "TURN_RIGHT",
+            self.BIN_SEARCH_MAX_OFFSET_DEGREES,
+            "SEARCH_BIN_RETURN_CENTER_FROM_LEFT",
+        )
+
         self.current_bin_target = None
 
         raise RuntimeError(
-            "The locked bin was not found after scanning "
-            f"both directions: {self.locked_bin_color}"
-        )  
+            "The locked bin was not found after a full "
+            "180-degree scan: "
+            f"{self.locked_bin_color}"
+        )
+
+    def _recover_locked_bin_alignment(
+        self,
+        last_horizontal_error: Optional[int],
+    ) -> Optional[dict]:
+        """
+        Reacquire a bin that disappeared during fine alignment.
+
+        Start searching in the direction the previous camera error
+        suggested, sweep up to 20 degrees on that side, then sweep
+        through the original heading to 20 degrees on the opposite
+        side. If still not found, return to the recovery-start heading.
+
+        Every turn is small and every step checks several camera frames.
+        """
+        if last_horizontal_error is None:
+            preferred_command = "TURN_LEFT"
+        elif last_horizontal_error < 0:
+            # Bin was left in image -> robot correction is right.
+            preferred_command = "TURN_RIGHT"
+        else:
+            # Bin was right in image -> robot correction is left.
+            preferred_command = "TURN_LEFT"
+
+        opposite_command = (
+            "TURN_LEFT"
+            if preferred_command == "TURN_RIGHT"
+            else "TURN_RIGHT"
+        )
+
+        side_steps = int(
+            self.BIN_ALIGNMENT_RECOVERY_MAX_OFFSET_DEGREES
+            / self.BIN_ALIGNMENT_RECOVERY_STEP_DEGREES
+        )
+
+        # From the recovery-start heading:
+        #   preferred side to +20
+        #   sweep through center to -20
+        #   return to center if nothing is found
+        recovery_commands = (
+            [preferred_command] * side_steps
+            + [opposite_command] * (side_steps * 2)
+            + [preferred_command] * side_steps
+        )
+
+        for step_index, command in enumerate(
+            recovery_commands,
+            start=1,
+        ):
+            if self.stop_event.is_set():
+                raise RuntimeError(
+                    "Bin alignment was stopped."
+                )
+
+            self.last_action = (
+                "RECOVER_BIN_ALIGNMENT "
+                f"STEP={step_index}/{len(recovery_commands)} "
+                f"{command} "
+                f"{self.BIN_ALIGNMENT_RECOVERY_STEP_DEGREES:.1f}"
+            )
+
+            if command == "TURN_LEFT":
+                actual_angle = self.arduino.turn_left(
+                    self.BIN_ALIGNMENT_RECOVERY_STEP_DEGREES
+                )
+            else:
+                actual_angle = self.arduino.turn_right(
+                    self.BIN_ALIGNMENT_RECOVERY_STEP_DEGREES
+                )
+
+            self.history.record_turn(
+                command=command,
+                angle=actual_angle,
+            )
+
+            time.sleep(
+                self.BIN_ALIGNMENT_DELAY_SECONDS
+            )
+
+            for _ in range(
+                self.BIN_ALIGNMENT_RECOVERY_CHECKS_PER_STEP
+            ):
+                if self.stop_event.is_set():
+                    raise RuntimeError(
+                        "Bin alignment was stopped."
+                    )
+
+                detection = (
+                    self._get_locked_bin_detection()
+                )
+
+                if detection is not None:
+                    print(
+                        "Bin alignment recovered: "
+                        f"center_x={detection['center_x']}, "
+                        f"area={detection['area']}"
+                    )
+                    return detection
+
+                time.sleep(
+                    self.BIN_ALIGNMENT_DELAY_SECONDS
+                )
+
+        return None
 
     def _align_with_locked_bin(self) -> dict:
         """
-        Turn in small steps until the locked-color bin is centered.
+        Center the locked-color bin with conservative corrections.
 
         Camera orientation in this project:
-        image left  -> turn robot right
-        image right -> turn robot left
+            image left  -> turn robot right
+            image right -> turn robot left
+
+        If the bin disappears, use a local +/-20-degree recovery sweep
+        instead of immediately failing after a very small 6/12/6 scan.
         """
         if not self.locked_bin_color:
             raise RuntimeError(
@@ -1695,6 +1984,7 @@ class TargetNavigator:
 
         centered_updates = 0
         lost_updates = 0
+        last_horizontal_error = None
 
         for _ in range(self.MAX_BIN_ALIGNMENT_UPDATES):
             if self.stop_event.is_set():
@@ -1714,7 +2004,6 @@ class TargetNavigator:
                     f"{self.MAX_BIN_ALIGNMENT_LOST_UPDATES}"
                 )
 
-                # Allow several missing frames before attempting recovery.
                 if (
                     lost_updates
                     < self.MAX_BIN_ALIGNMENT_LOST_UPDATES
@@ -1728,78 +2017,23 @@ class TargetNavigator:
                     "RECOVERING_LOST_BIN_ALIGNMENT"
                 )
 
-                # Search left, then across to the right, then approximately
-                # return to the original heading.
-                recovery_turns = [
-                    ("TURN_LEFT", 6),
-                    ("TURN_RIGHT", 12),
-                    ("TURN_LEFT", 6),
-                ]
-
-                recovered_detection = None
-
-                for command, angle in recovery_turns:
-                    if self.stop_event.is_set():
-                        raise RuntimeError(
-                            "Bin alignment was stopped."
-                        )
-
-                    if command == "TURN_LEFT":
-                        actual_angle = self.arduino.turn_left(
-                            angle
-                        )
-
-                        self.history.record_turn(
-                            command="TURN_LEFT",
-                            angle=actual_angle,
-                        )
-
-                    else:
-                        actual_angle = self.arduino.turn_right(
-                            angle
-                        )
-
-                        self.history.record_turn(
-                            command="TURN_RIGHT",
-                            angle=actual_angle,
-                        )
-
-                    time.sleep(
-                        self.BIN_ALIGNMENT_DELAY_SECONDS
+                detection = (
+                    self._recover_locked_bin_alignment(
+                        last_horizontal_error
                     )
+                )
 
-                    # Check several frames after each recovery movement.
-                    for _ in range(4):
-                        if self.stop_event.is_set():
-                            raise RuntimeError(
-                                "Bin alignment was stopped."
-                            )
-
-                        recovered_detection = (
-                            self._get_locked_bin_detection()
-                        )
-
-                        if recovered_detection is not None:
-                            break
-
-                        time.sleep(
-                            self.BIN_ALIGNMENT_DELAY_SECONDS
-                        )
-
-                    if recovered_detection is not None:
-                        break
-
-                if recovered_detection is None:
+                if detection is None:
                     self.current_bin_target = None
 
                     raise RuntimeError(
                         "The locked bin was lost during alignment "
-                        "and could not be recovered by scanning."
+                        "and could not be recovered within +/-"
+                        f"{self.BIN_ALIGNMENT_RECOVERY_MAX_OFFSET_DEGREES:.0f} "
+                        "degrees."
                     )
 
-                detection = recovered_detection
                 self.current_bin_target = detection
-
                 lost_updates = 0
                 centered_updates = 0
 
@@ -1809,7 +2043,6 @@ class TargetNavigator:
                 )
 
             else:
-                # A normal detection was received.
                 self.current_bin_target = detection
                 lost_updates = 0
 
@@ -1818,9 +2051,8 @@ class TargetNavigator:
                 - self.FRAME_CENTER_X
             )
 
-            # A large color blob means the bin is already close, so
-            # the same turn angle sweeps it across far more pixels
-            # than it would from a distance.
+            last_horizontal_error = horizontal_error
+
             is_close_range = (
                 detection["area"]
                 >= self.BIN_CLOSE_RANGE_AREA_PX
@@ -1874,15 +2106,12 @@ class TargetNavigator:
 
             absolute_error = abs(horizontal_error)
 
-            # Use large corrections when far away and small corrections
-            # when close to the center to reduce left-right oscillation.
-            # At close range, always use the smallest step regardless
-            # of pixel error, since proximity already amplifies it.
+            # Be more conservative than the old 3/2/1-degree logic.
+            # A bin near the edge gets at most 2 degrees per update;
+            # once reasonably close to center, use only 1 degree.
             if is_close_range:
                 turn_degrees = 1
             elif absolute_error > 180:
-                turn_degrees = 3
-            elif absolute_error > 100:
                 turn_degrees = 2
             else:
                 turn_degrees = 1
@@ -1931,32 +2160,30 @@ class TargetNavigator:
 
     def _approach_locked_bin(self) -> float:
         """
-        Move continuously toward the locked bin while monitoring
-        camera alignment and ultrasonic distance.
+        Walk toward the already-locked bin using short, camera-confirmed
+        forward pulses.
 
-        Continuous movement stops only when:
-        - the bin is meaningfully misaligned,
-        - the bin is temporarily lost,
-        - the distance reading is unreliable,
-        - the release distance is reached,
-        - or an emergency distance is detected.
+        Important rules:
+        - Never drive while the locked-color bin is outside the steering
+          tolerance.
+        - Re-center with only 1-degree turns.
+        - Re-check the camera after every forward pulse.
+        - Never release based on ultrasonic distance alone. The locked
+          color must also be centered and visually close.
+        - If the bin disappears, stop first and try the same local recovery
+          sweep used by fine alignment.
         """
         self.status = "APPROACHING_BIN"
 
         lost_updates = 0
-        misaligned_updates = 0
+        close_unconfirmed_updates = 0
+        last_horizontal_error = None
 
-        # Wider than the precise initial-alignment tolerance.
-        # This prevents small camera shifts from causing constant stops.
-        approach_alignment_tolerance_px = 90
-
-        # Require repeated misalignment before correcting.
-        required_misaligned_updates = 2
+        self._stop_continuous_forward()
 
         for _ in range(self.MAX_BIN_APPROACH_UPDATES):
             if self.stop_event.is_set():
                 self._stop_continuous_forward()
-
                 raise RuntimeError(
                     "Bin approach was stopped."
                 )
@@ -1964,67 +2191,63 @@ class TargetNavigator:
             detection = self._get_locked_bin_detection()
 
             if detection is None:
-                lost_updates += 1
-
-                # Never continue driving while the bin is invisible.
                 self._stop_continuous_forward()
+                lost_updates += 1
 
                 self.last_action = (
                     "BIN_LOST_DURING_APPROACH "
                     f"{lost_updates}/{self.MAX_BIN_LOST_UPDATES}"
                 )
 
-                if lost_updates >= self.MAX_BIN_LOST_UPDATES:
-                    raise RuntimeError(
-                        "The locked bin was lost during approach."
-                    )
-
-                time.sleep(
-                    self.BIN_APPROACH_DELAY_SECONDS
-                )
-                continue
-
-            lost_updates = 0
-
-            horizontal_error = (
-                detection["center_x"]
-                - self.FRAME_CENTER_X
-            )
-
-            if (
-                abs(horizontal_error)
-                > approach_alignment_tolerance_px
-            ):
-                misaligned_updates += 1
-
-                self.last_action = (
-                    "BIN_APPROACH_MISALIGNED "
-                    f"{misaligned_updates}/"
-                    f"{required_misaligned_updates} "
-                    f"ERROR_PX={horizontal_error}"
-                )
-
-                # Ignore one isolated shifted camera frame.
-                if (
-                    misaligned_updates
-                    < required_misaligned_updates
-                ):
+                if lost_updates < self.MAX_BIN_LOST_UPDATES:
                     time.sleep(
                         self.BIN_APPROACH_DELAY_SECONDS
                     )
                     continue
 
-                # Stop before making a steering correction.
-                self._stop_continuous_forward()
-
                 self.last_action = (
-                    "BIN_APPROACH_REALIGN "
-                    f"ERROR_PX={horizontal_error}"
+                    "RECOVERING_BIN_DURING_APPROACH"
                 )
 
+                detection = self._recover_locked_bin_alignment(
+                    last_horizontal_error
+                )
+
+                if detection is None:
+                    self.current_bin_target = None
+                    raise RuntimeError(
+                        "The locked bin was lost during approach "
+                        "and could not be recovered."
+                    )
+
+                self.current_bin_target = detection
+                lost_updates = 0
+            else:
+                lost_updates = 0
+                self.current_bin_target = detection
+
+            horizontal_error = (
+                detection["center_x"]
+                - self.FRAME_CENTER_X
+            )
+            last_horizontal_error = horizontal_error
+
+            if (
+                abs(horizontal_error)
+                > self.BIN_APPROACH_ALIGNMENT_TOLERANCE_PX
+            ):
+                self._stop_continuous_forward()
+                close_unconfirmed_updates = 0
+
                 if horizontal_error < 0:
+                    self.last_action = (
+                        "BIN_APPROACH_REALIGN TURN_RIGHT "
+                        f"{self.BIN_APPROACH_REALIGN_DEGREES} "
+                        f"ERROR_PX={horizontal_error}"
+                    )
+
                     actual_angle = self.arduino.turn_right(
-                        self.BIN_ALIGNMENT_TURN_DEGREES
+                        self.BIN_APPROACH_REALIGN_DEGREES
                     )
 
                     self.history.record_turn(
@@ -2032,8 +2255,14 @@ class TargetNavigator:
                         angle=actual_angle,
                     )
                 else:
+                    self.last_action = (
+                        "BIN_APPROACH_REALIGN TURN_LEFT "
+                        f"{self.BIN_APPROACH_REALIGN_DEGREES} "
+                        f"ERROR_PX={horizontal_error}"
+                    )
+
                     actual_angle = self.arduino.turn_left(
-                        self.BIN_ALIGNMENT_TURN_DEGREES
+                        self.BIN_APPROACH_REALIGN_DEGREES
                     )
 
                     self.history.record_turn(
@@ -2041,23 +2270,16 @@ class TargetNavigator:
                         angle=actual_angle,
                     )
 
-                misaligned_updates = 0
-
                 time.sleep(
                     self.BIN_APPROACH_DELAY_SECONDS
                 )
                 continue
 
-            misaligned_updates = 0
-
             distance_cm = self.arduino.read_distance_cm()
 
             if self._distance_is_unreliable(distance_cm):
-                # Do not drive blindly without a trustworthy distance.
                 self._stop_continuous_forward()
-                self.last_ultrasonic_distance_cm = (
-                    distance_cm
-                )
+                self.last_ultrasonic_distance_cm = distance_cm
                 self.last_action = (
                     "BIN_DISTANCE_UNRELIABLE"
                 )
@@ -2067,54 +2289,81 @@ class TargetNavigator:
                 )
                 continue
 
+            self.last_ultrasonic_distance_cm = distance_cm
+
             if distance_cm <= self.BIN_EMERGENCY_DISTANCE_CM:
                 self._stop_continuous_forward()
-
                 raise RuntimeError(
                     "Emergency stop during bin approach: "
                     f"{distance_cm:.1f} cm."
                 )
 
+            visually_centered_for_release = (
+                abs(horizontal_error)
+                <= self.BIN_RELEASE_VISUAL_CENTER_TOLERANCE_PX
+            )
+            visually_close_to_locked_bin = (
+                detection["area"]
+                >= self.BIN_CLOSE_RANGE_AREA_PX
+            )
+
             if distance_cm <= self.BIN_RELEASE_DISTANCE_CM:
                 self._stop_continuous_forward()
 
-                self.status = "BIN_RELEASE_POSITION_REACHED"
+                if (
+                    visually_centered_for_release
+                    and visually_close_to_locked_bin
+                ):
+                    self.status = (
+                        "BIN_RELEASE_POSITION_REACHED"
+                    )
+                    self.last_action = (
+                        "BIN_RELEASE_POSITION_REACHED "
+                        f"DISTANCE_CM={distance_cm:.1f} "
+                        f"ERROR_PX={horizontal_error} "
+                        f"AREA={detection['area']}"
+                    )
+
+                    print(
+                        "Bin release position reached: "
+                        f"color={self.locked_bin_color}, "
+                        f"distance={distance_cm:.1f} cm, "
+                        f"center_x={detection['center_x']}, "
+                        f"area={detection['area']}"
+                    )
+
+                    return distance_cm
+
+                close_unconfirmed_updates += 1
+                self.status = (
+                    "BIN_CLOSE_BUT_NOT_VISUALLY_CONFIRMED"
+                )
                 self.last_action = (
-                    "BIN_RELEASE_POSITION_REACHED "
-                    f"DISTANCE_CM={distance_cm:.1f}"
-                )
-
-                print(
-                    "Bin release position reached at "
-                    f"{distance_cm:.1f} cm."
-                )
-
-                return distance_cm
-
-            if distance_cm > self.BIN_FAR_DISTANCE_CM:
-                # Far from the bin: smooth continuous forward is
-                # safe here, same as the far-range object approach.
-                self._maintain_continuous_forward(
-                    distance_cm
-                )
-
-                self.status = "APPROACHING_BIN_CONTINUOUSLY"
-                self.last_action = (
-                    "APPROACH_BIN_CONTINUOUS "
+                    "HOLD_FOR_LOCKED_BIN_CONFIRMATION "
+                    f"{close_unconfirmed_updates}/"
+                    f"{self.MAX_BIN_CLOSE_UNCONFIRMED_UPDATES} "
                     f"DISTANCE_CM={distance_cm:.1f} "
-                    f"ERROR_PX={horizontal_error}"
+                    f"ERROR_PX={horizontal_error} "
+                    f"AREA={detection['area']}"
                 )
+
+                if (
+                    close_unconfirmed_updates
+                    >= self.MAX_BIN_CLOSE_UNCONFIRMED_UPDATES
+                ):
+                    raise RuntimeError(
+                        "Ultrasonic sees a close obstacle, but the "
+                        f"locked {self.locked_bin_color} bin is not "
+                        "visually confirmed at the release position."
+                    )
 
                 time.sleep(
                     self.BIN_APPROACH_DELAY_SECONDS
                 )
                 continue
 
-            # Close enough that continuous full-speed driving could
-            # cover the remaining gap to BIN_EMERGENCY_DISTANCE_CM
-            # between two ultrasonic reads. Stop and creep in with
-            # short pulses instead, re-checking distance after each
-            # one, the same way pickup positioning does for objects.
+            close_unconfirmed_updates = 0
+
             self._stop_continuous_forward()
 
             pulse_ms = self._bin_approach_duration(
@@ -2125,7 +2374,9 @@ class TargetNavigator:
             self.last_action = (
                 "APPROACH_BIN_PULSE "
                 f"{pulse_ms} "
-                f"DISTANCE_CM={distance_cm:.1f}"
+                f"DISTANCE_CM={distance_cm:.1f} "
+                f"ERROR_PX={horizontal_error} "
+                f"COLOR={self.locked_bin_color}"
             )
 
             actual_duration = self.arduino.forward(
@@ -2138,10 +2389,14 @@ class TargetNavigator:
                 source="BIN_APPROACH",
             )
 
+            time.sleep(
+                self.BIN_APPROACH_DELAY_SECONDS
+            )
+
         self._stop_continuous_forward()
 
         raise RuntimeError(
-            "The robot did not reach the bin release distance."
+            "The robot did not reach the locked bin release position."
         )
 
     def _get_locked_bin_detection(self):

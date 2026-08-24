@@ -27,8 +27,8 @@ DESTINATION_BIN_COLORS = {
 
 BIN_COLOR_HSV_RANGES = {
     "yellow": {
-        "lower": (20, 100, 100),
-        "upper": (35, 255, 255),
+        "lower": (15, 60, 60),
+        "upper": (40, 255, 255),
     },
     "blue": {
         "lower": (90, 80, 70),

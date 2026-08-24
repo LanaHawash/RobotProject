@@ -27,7 +27,7 @@ class SpeechRecognizer:
         "start navigation",
         "start deep cleaning",
         "stop",
-        "cancel",
+        
     ]
 
     # Two matching partials is fast while still giving some

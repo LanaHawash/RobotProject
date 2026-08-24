@@ -35,7 +35,7 @@ The current project supports four main capabilities:
      - `start navigation`
      - `start deep cleaning`
      - `stop`
-     - `cancel`
+    
 
 4. **Baby monitoring**
    - Detect possible baby crying using YAMNet.
@@ -430,10 +430,10 @@ Supported commands are:
 start navigation
 start deep cleaning
 stop
-cancel
+
 ```
 
-`stop` and `cancel` trigger the emergency-stop behavior.
+`stop` triggers the emergency-stop behavior.
 
 ---
 

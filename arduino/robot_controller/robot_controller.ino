@@ -51,6 +51,14 @@ const float TURN_ACCEPTANCE_DEGREES = 1.2;
 const float MIN_TURN_PROGRESS_CHANGE = 0.08;
 const unsigned long TURN_STALL_TIMEOUT_MS = 350;
 
+
+const uint8_t MANUAL_SPEED = 200;
+
+bool manualDriveActive = false;
+unsigned long manualDriveLastCommandMs = 0;
+
+const unsigned long MANUAL_DRIVE_TIMEOUT_MS = 3000;   
+
 // ==================================================
 // PICKUP POSITIONING SETTINGS
 // ==================================================
@@ -188,6 +196,7 @@ void stopMotors()
   digitalWrite(IN4, LOW);
 
   continuousForwardActive = false;
+  manualDriveActive = false;
 }
 
 void setForwardDirection()
@@ -245,6 +254,61 @@ void startContinuousForward()
   );
 }
 
+void startManualDrive(String direction)
+{
+  if (direction == "FORWARD")
+  {
+    moveForward();
+  }
+  else if (direction == "BACKWARD")
+  {
+    moveBackward();
+  }
+  else if (direction == "LEFT")
+  {
+    setLeftTurnDirection();
+    setMotorSpeed(MANUAL_SPEED, MANUAL_SPEED);
+  }
+  else if (direction == "RIGHT")
+  {
+    setRightTurnDirection();
+    setMotorSpeed(MANUAL_SPEED, MANUAL_SPEED);
+  }
+  else
+  {
+    Serial.println(F("ERROR,INVALID_MANUAL_DIRECTION"));
+    return;
+  }
+
+  manualDriveActive = true;
+  manualDriveLastCommandMs = millis();
+
+  Serial.print(F("MANUAL_DRIVE_STARTED,"));
+  Serial.println(direction);
+}
+
+void monitorManualDrive()
+{
+  if (!manualDriveActive)
+  {
+    return;
+  }
+
+  if (
+    millis() - manualDriveLastCommandMs
+    >= MANUAL_DRIVE_TIMEOUT_MS
+  )
+  {
+    stopMotors();
+
+    manualDriveActive = false;
+    
+
+    Serial.println(
+      F("MANUAL_DRIVE_TIMEOUT_STOP")
+    );
+  }
+}
 
 void refreshContinuousForward()
 {
@@ -1605,6 +1669,15 @@ float turnByAngle(
 void processCommand(String command)
 {
   command.trim();
+  if (command.startsWith("MANUAL "))
+  {
+    String direction = command.substring(7);
+    direction.trim();
+
+    startManualDrive(direction);
+
+    return;
+  }
 
   if (command == "PING")
   {
@@ -1837,4 +1910,5 @@ void loop()
   }
 
   monitorContinuousForward();
+  monitorManualDrive();
 }

@@ -80,7 +80,8 @@ class TargetNavigator:
     CM_PER_MS = 0.055
     MAX_FORWARD_CHUNK_MS = 5000
     MIN_EXECUTABLE_TURN_DEGREES = 1.0
-    RETURN_DURATION_SCALE = 0.5
+    OBJECT_RETURN_DURATION_SCALE = 0.55
+    BIN_RETURN_DURATION_SCALE = 0.40
 
    
     
@@ -150,6 +151,14 @@ class TargetNavigator:
     
 
     NEXT_TARGET_CHECK_DELAY_SECONDS = 2.0
+    # ==================================================
+    # IMU DIAGNOSTIC SETTINGS
+    # ==================================================
+
+    # Diagnostic 1:
+    # False = keep the original startup IMU bias for every sorting cycle.
+    # True  = recalibrate between sorting cycles as normal.
+    ENABLE_RUNTIME_IMU_RECALIBRATION = False
 
     def __init__(
         self,
@@ -194,6 +203,8 @@ class TargetNavigator:
         self.last_forward_refresh_time = 0.0
         self.continuous_forward_start_time = None
         self.misaligned_updates = 0
+
+        self.sorting_cycle_number = 0
         
         
     def start(self, selected_target: dict) -> None:
@@ -201,6 +212,15 @@ class TargetNavigator:
             raise RuntimeError(
                 "Navigation is already running."
             )
+
+        self.sorting_cycle_number = 1
+
+        print(
+            "\n"
+            "========================================\n"
+            f"SORTING CYCLE {self.sorting_cycle_number} START\n"
+            "========================================"
+        )
 
         self._lock_selected_target(selected_target)
 
@@ -262,7 +282,9 @@ class TargetNavigator:
 
     def _manual_return_loop(self) -> None:
         try:
-            self._return_to_start()
+            self._return_to_start(
+                self.OBJECT_RETURN_DURATION_SCALE
+            )
             self._face_bins()
         except Exception as error:
             if self.stop_event.is_set():
@@ -382,9 +404,32 @@ class TargetNavigator:
         self.arduino.stop()
 
         self.status = "RECALIBRATING_IMU"
-        self.last_action = "CALIBRATE_IMU"
 
-        self.arduino.calibrate_imu()
+        if self.ENABLE_RUNTIME_IMU_RECALIBRATION:
+            self.last_action = "CALIBRATE_IMU"
+
+            print(
+                "\n"
+                "IMU DIAGNOSTIC: "
+                f"recalibrating after cycle "
+                f"{self.sorting_cycle_number}."
+            )
+
+            self.arduino.calibrate_imu()
+
+        else:
+            self.last_action = (
+                "CALIBRATE_IMU_SKIPPED_DIAGNOSTIC"
+            )
+
+            print(
+                "\n"
+                "IMU DIAGNOSTIC: "
+                "runtime recalibration SKIPPED. "
+                f"Cycle {self.sorting_cycle_number + 1} "
+                "will continue using the existing "
+                "startup gyro bias."
+            )
 
         # Clear the completed home-to-bin-to-home route.
         self.history.clear()
@@ -505,6 +550,15 @@ class TargetNavigator:
             # --------------------------------
             # NEW OBJECT FOUND
             # --------------------------------
+
+            self.sorting_cycle_number += 1
+
+            print(
+                "\n"
+                "========================================\n"
+                f"SORTING CYCLE {self.sorting_cycle_number} START\n"
+                "========================================"
+            )
 
             self._lock_selected_target(
                 selected_target
@@ -1404,7 +1458,9 @@ class TargetNavigator:
         self._grab_object()
 
         # Use the object-route history to return home.
-        self._return_to_start()
+        self._return_to_start(
+            self.OBJECT_RETURN_DURATION_SCALE
+        )
         self._face_bins()
 
         # The robot is now at home and facing the bins.
@@ -1437,7 +1493,9 @@ class TargetNavigator:
 
         # The history still represents the complete home-to-bin route,
         # including the small movement away from the bin.
-        self._return_to_start()
+        self._return_to_start(
+            self.BIN_RETURN_DURATION_SCALE
+)
 
         if self.stop_event.is_set():
             return False
@@ -1536,7 +1594,10 @@ class TargetNavigator:
 
         print("Object release completed.")    
 
-    def _return_to_start(self) -> None:
+    def _return_to_start(
+        self,
+        duration_scale: float,
+    ) -> None:
         """
         Turn once toward the estimated starting point and drive
         straight there, using the pose estimated from the outbound
@@ -1573,7 +1634,11 @@ class TargetNavigator:
         )
 
         self._execute_turn(turn_needed)
-        self._drive_distance_cm(distance_home_cm)
+
+        self._drive_distance_cm(
+            distance_home_cm,
+            duration_scale,
+        )
 
         self.status = "HOME_REACHED"
         self.last_action = "HOME_REACHED"
@@ -2450,6 +2515,7 @@ class TargetNavigator:
     def _drive_distance_cm(
         self,
         distance_cm: float,
+        duration_scale: float,
     ) -> None:
         if distance_cm <= 0:
             return
@@ -2460,7 +2526,7 @@ class TargetNavigator:
 
         remaining_ms = int(
             estimated_ms
-            * self.RETURN_DURATION_SCALE
+            * duration_scale
         )
 
         while remaining_ms > 0:

@@ -34,6 +34,13 @@ from pathlib import Path
 
 import firebase_admin
 from firebase_admin import credentials, messaging
+from robot_project.hardware.manual_drive_controller import (
+    ManualDriveController,
+)
+
+from robot_project.web.manual_drive_routes import (
+    configure_manual_drive_routes,
+)
 
 app = Flask(__name__)
 
@@ -45,6 +52,10 @@ selector = ObjectSelector()
 fps_counter = FPS()
 arduino = ArduinoController()
 arduino_error = None
+
+manual_drive = ManualDriveController(
+    arduino=arduino,
+)
 
 microphone = Microphone()
 audio_service = AudioService()
@@ -205,6 +216,14 @@ deep_cleaning = DeepCleaningNavigator(
     stop_sorting=deep_cleaning_sorter.stop,
 )
 
+app.register_blueprint(
+    configure_manual_drive_routes(
+        manual_drive_controller=manual_drive,
+        arduino=arduino,
+        navigator=navigator,
+        deep_cleaning=deep_cleaning,
+    )
+)
 
 def create_depth_visualization(depth_frame):
     """

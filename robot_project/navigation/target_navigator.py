@@ -80,7 +80,7 @@ class TargetNavigator:
     CM_PER_MS = 0.055
     MAX_FORWARD_CHUNK_MS = 5000
     MIN_EXECUTABLE_TURN_DEGREES = 1.0
-    OBJECT_RETURN_DURATION_SCALE = 0.55
+    OBJECT_RETURN_DURATION_SCALE = 0.52
     BIN_RETURN_DURATION_SCALE = 0.40
 
    
@@ -130,9 +130,9 @@ class TargetNavigator:
     # one another, so the camera must re-confirm the locked color after
     # every short movement instead of driving continuously toward whatever
     # the front ultrasonic sensor happens to see.
-    BIN_FAR_FORWARD_MS = 120
-    BIN_MEDIUM_FORWARD_MS = 80
-    BIN_CLOSE_FORWARD_MS = 40
+    BIN_FAR_FORWARD_MS = 180
+    BIN_MEDIUM_FORWARD_MS = 120
+    BIN_CLOSE_FORWARD_MS = 80
 
     # Keep the locked-color bin tighter to the camera center while walking.
     BIN_APPROACH_ALIGNMENT_TOLERANCE_PX = 55
@@ -1679,6 +1679,9 @@ class TargetNavigator:
             f"turning {turn_to_environment:.1f} degrees."
         )
 
+
+    
+        
     def _face_bins(self) -> None:
         """
         Turn to face the bins behind the starting point, using the

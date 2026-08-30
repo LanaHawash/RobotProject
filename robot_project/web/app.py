@@ -4,7 +4,7 @@ import atexit
 import signal
 
 import cv2
-from flask import Flask, Response
+from flask import Flask, Response, request, jsonify
 from flask_sock import Sock
 from robot_project.camera.fps import FPS
 from robot_project.camera.pipeline import CameraPipeline
@@ -62,8 +62,9 @@ audio_service = AudioService()
 speaker = Speaker()
 sock = Sock(app)
 firebase_ready = False
-FCM_DEVICE_TOKEN = "fV05MFkRTNOhf0hvodcrSJ:APA91bFGGdlKzGEgYT-Cdw8A65EXS6Y3BD_vuFCqkC9SRJYUrmHyzr8j-MC4sFXb5hYw-t3Tkr2NHmhQoy8dHU1E6hXokSZnsqT-9odPjz31sAc-XRFJquk"
 
+FCM_DEVICE_TOKEN = None
+fcm_token_lock = threading.Lock()
 audio_thread = None
 
 processing_thread = None
@@ -607,11 +608,64 @@ def initialize_firebase():
 
     print("Firebase notification service ready.")
 
+@app.route(
+    "/firebase/register-token",
+    methods=["POST"],
+)
+def register_fcm_token():
+    global FCM_DEVICE_TOKEN
+
+    data = request.get_json(silent=True) or {}
+    token = data.get("token")
+
+    if not token or not isinstance(token, str):
+        return jsonify(
+            {
+                "success": False,
+                "error": "FCM token is required.",
+            }
+        ), 400
+
+    token = token.strip()
+
+    if not token:
+        return jsonify(
+            {
+                "success": False,
+                "error": "FCM token is empty.",
+            }
+        ), 400
+
+    with fcm_token_lock:
+        FCM_DEVICE_TOKEN = token
+
+    print(
+        "FCM device token registered:",
+        token[:20] + "...",
+    )
+
+    return jsonify(
+        {
+            "success": True,
+            "message": "FCM token registered.",
+        }
+    )
+
 def send_baby_cry_notification():
     if not firebase_ready:
         print(
             "Baby cry notification skipped: "
             "Firebase is not ready."
+        )
+        return
+
+    with fcm_token_lock:
+        device_token = FCM_DEVICE_TOKEN
+
+    if not device_token:
+        print(
+            "Baby cry notification skipped: "
+            "no phone FCM token is registered."
         )
         return
 
@@ -627,7 +681,7 @@ def send_baby_cry_notification():
                 "type": "BABY_CRY_DETECTED",
                 "mode": "AUTO_LULLABY",
             },
-            token=FCM_DEVICE_TOKEN,
+            token=device_token,
         )
 
         response = messaging.send(message)

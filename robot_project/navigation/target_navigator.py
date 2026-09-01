@@ -14,6 +14,9 @@ from robot_project.config import DESTINATION_BIN_COLORS
 from robot_project.detection.bin_color_detector import (
     BinColorDetector,
 )
+from robot_project.navigation.obstacle_avoidance import (
+    ObstacleAvoidance,
+)
 
 
 class TargetNavigator:
@@ -179,6 +182,12 @@ class TargetNavigator:
         self.stop_event = threading.Event()
 
         self.history = MovementHistory()
+        
+
+        self.obstacle_avoidance = ObstacleAvoidance(
+            arduino=self.arduino,
+            history=self.history,
+        )
 
         self.status = "IDLE"
         self.last_action = None
@@ -226,6 +235,7 @@ class TargetNavigator:
 
         self.stop_event.clear()
         self.history.clear()
+        self.obstacle_avoidance.reset()
 
         self.error = None
         self.status = "STARTING"
@@ -433,6 +443,7 @@ class TargetNavigator:
 
         # Clear the completed home-to-bin-to-home route.
         self.history.clear()
+        self.obstacle_avoidance.reset()
 
         self.pickup_distance_cm = None
         self.pickup_pulses = []
@@ -896,6 +907,130 @@ class TargetNavigator:
                     distance_cm
                 )
 
+                # --------------------------------------------------
+                # EMERGENCY STOP ALWAYS HAS HIGHEST PRIORITY
+                # --------------------------------------------------
+
+                if distance_cm <= self.EMERGENCY_DISTANCE_CM:
+                    self._stop_continuous_forward()
+
+                    raise RuntimeError(
+                        "ERROR,OBJECT_TOO_CLOSE,"
+                        f"DISTANCE_CM={distance_cm:.1f}"
+                    )
+
+                # --------------------------------------------------
+                # OBSTACLE AVOIDANCE
+                # --------------------------------------------------
+                #
+                # The camera still sees the selected target and gives
+                # us box_occupancy.
+                #
+                # If the selected target still looks visually far away
+                # but ultrasonic sees something close in front of the
+                # robot, ObstacleAvoidance treats that close object as
+                # an obstacle instead of the selected pickup target.
+                # --------------------------------------------------
+
+                obstacle_confirmed = (
+                    self.obstacle_avoidance.should_avoid(
+                        distance_cm=distance_cm,
+                        target_occupancy=box_occupancy,
+                    )
+                )
+
+                if obstacle_confirmed:
+                    # Stop through TargetNavigator so continuous-forward
+                    # state and MovementHistory remain correct.
+                    self._stop_continuous_forward()
+
+                    self.status = "AVOIDING_OBSTACLE"
+                    self.last_action = (
+                        "AVOID_OBSTACLE_RIGHT "
+                        f"DISTANCE_CM={distance_cm:.1f} "
+                        f"TARGET_OCCUPANCY={box_occupancy:.3f}"
+                    )
+
+                    print(
+                        "Obstacle confirmed during target approach: "
+                        f"distance={distance_cm:.1f} cm, "
+                        f"target_occupancy={box_occupancy:.3f}"
+                    )
+
+                    self.obstacle_avoidance.avoid_right()
+
+                    # The robot has physically changed position during
+                    # the detour. Do not assume the target is still
+                    # centered. Give control back to the normal camera
+                    # alignment logic.
+                    self.centered_updates = 0
+                    self.misaligned_updates = 0
+
+                    self.last_ultrasonic_distance_cm = None
+
+                    # The close ultrasonic reading belonged to the
+                    # obstacle, not necessarily to the selected target.
+                    self.close_range_mode = False
+
+                    # Do not allow a close obstacle reading to trigger
+                    # the camera-blind pickup handoff.
+                    camera_loss_handoff_active = False
+
+                    self.status = "SEARCHING"
+                    self.last_action = (
+                        "RESUME_TARGET_AFTER_OBSTACLE"
+                    )
+
+                    time.sleep(
+                        self.TARGET_UPDATE_DELAY_SECONDS
+                    )
+
+                    continue
+
+                # --------------------------------------------------
+                # POSSIBLE OBSTACLE - WAIT FOR CONFIRMATION
+                # --------------------------------------------------
+                #
+                # ObstacleAvoidance requires consecutive ultrasonic
+                # confirmations. If this was only the first suspicious
+                # reading, stop here instead of moving closer before
+                # obtaining the next reading.
+                # --------------------------------------------------
+
+                if (
+                    self.obstacle_avoidance.confirmation_count
+                    > 0
+                ):
+                    self._stop_continuous_forward()
+
+                    self.status = "CONFIRMING_OBSTACLE"
+                    self.last_action = (
+                        "WAIT_FOR_OBSTACLE_CONFIRMATION "
+                        f"DISTANCE_CM={distance_cm:.1f} "
+                        f"COUNT="
+                        f"{self.obstacle_avoidance.confirmation_count}/"
+                        f"{self.obstacle_avoidance.REQUIRED_CONFIRMATIONS}"
+                    )
+
+                    # This ultrasonic reading may belong to an obstacle,
+                    # so do not let it activate close-target behavior.
+                    self.close_range_mode = False
+                    camera_loss_handoff_active = False
+
+                    # Re-confirm camera alignment before taking the
+                    # next obstacle measurement.
+                    self.centered_updates = 0
+
+                    time.sleep(
+                        self.TARGET_UPDATE_DELAY_SECONDS
+                    )
+
+                    continue
+
+                # --------------------------------------------------
+                # NORMAL TARGET APPROACH CONTINUES UNCHANGED
+                # --------------------------------------------------
+
                 if (
                     distance_cm
                     <= self.CONTINUOUS_FORWARD_MIN_DISTANCE_CM
@@ -904,16 +1039,8 @@ class TargetNavigator:
                     # back to long continuous movement because
                     # of a later sensor misreading.
                     self.close_range_mode = True
-                
 
-                if distance_cm <= self.EMERGENCY_DISTANCE_CM:
-                    self._stop_continuous_forward()
-                    raise RuntimeError(
-                        "ERROR,OBJECT_TOO_CLOSE,"
-                        f"DISTANCE_CM={distance_cm:.1f}"
-                    )
-
-                # At 15 cm the smooth far drive ends. The existing
+                # At 15 cm the smooth far drive ends. The existing    
                 # Arduino fine-positioning routine then slows down and
                 # calibrates the final pickup position.
                 if (

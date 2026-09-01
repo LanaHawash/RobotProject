@@ -369,7 +369,25 @@ def camera_processing_loop():
 
             closest = manager.get_closest_object()
 
-            selected_target = selector.update(detections)
+            # The camera still detects and displays these objects,
+            # but they are not eligible for selection during
+            # deep-cleaning mode.
+            selection_detections = detections
+
+            if deep_cleaning.is_running():
+                selection_detections = [
+                    detection
+                    for detection in detections
+                    if (
+                        detection["class"]
+                        not in DeepCleaningNavigator.IGNORED_TARGET_LABELS
+                    )
+                ]
+
+            selected_target = selector.update(
+                selection_detections
+            )
+
             candidate_status = selector.get_candidate_status()
 
             # Build a live navigation target using bounding-box size.

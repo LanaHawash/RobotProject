@@ -1880,45 +1880,104 @@ class TargetNavigator:
                 ),
             )
 
+            # Check straight ahead first.
             detection = check_current_heading()
             if detection is not None:
                 return detection
 
-        # Nothing on the right. Return exactly to the original
-        # bin-facing heading before scanning the left side.
-        turn_and_record(
-            "TURN_LEFT",
-            self.BIN_SEARCH_MAX_OFFSET_DEGREES,
-            "SEARCH_BIN_RETURN_CENTER_FROM_RIGHT",
-        )
+            # Scan LEFT first in small increments to -90 degrees.
+            for step in range(1, max_side_steps + 1):
+                if self.stop_event.is_set():
+                    raise RuntimeError(
+                        "Bin search was stopped."
+                    )
 
-        # Scan left in small increments to -90 degrees.
-        for step in range(1, max_side_steps + 1):
-            if self.stop_event.is_set():
-                raise RuntimeError(
-                    "Bin search was stopped."
+                turn_and_record(
+                    "TURN_LEFT",
+                    self.BIN_SEARCH_STEP_DEGREES,
+                    (
+                        "SEARCH_BIN_LEFT "
+                        f"OFFSET={step * self.BIN_SEARCH_STEP_DEGREES:.0f}"
+                    ),
                 )
 
+                detection = check_current_heading()
+                if detection is not None:
+                    return detection
+
+            # Nothing on the left. Return to center.
             turn_and_record(
-                "TURN_LEFT",
-                self.BIN_SEARCH_STEP_DEGREES,
-                (
-                    "SEARCH_BIN_LEFT "
-                    f"OFFSET={step * self.BIN_SEARCH_STEP_DEGREES:.0f}"
-                ),
+                "TURN_RIGHT",
+                self.BIN_SEARCH_MAX_OFFSET_DEGREES,
+                "SEARCH_BIN_RETURN_CENTER_FROM_LEFT",
             )
 
-            detection = check_current_heading()
-            if detection is not None:
-                return detection
+            # Scan RIGHT in small increments to +90 degrees.
+            for step in range(1, max_side_steps + 1):
+                if self.stop_event.is_set():
+                    raise RuntimeError(
+                        "Bin search was stopped."
+                    )
 
-        # Search failed. Restore the original heading before raising
-        # the error so the robot never remains parked at -90 degrees.
-        turn_and_record(
-            "TURN_RIGHT",
-            self.BIN_SEARCH_MAX_OFFSET_DEGREES,
-            "SEARCH_BIN_RETURN_CENTER_FROM_LEFT",
-        )
+                turn_and_record(
+                    "TURN_RIGHT",
+                    self.BIN_SEARCH_STEP_DEGREES,
+                    (
+                        "SEARCH_BIN_RIGHT "
+                        f"OFFSET={step * self.BIN_SEARCH_STEP_DEGREES:.0f}"
+                    ),
+                )
+
+                detection = check_current_heading()
+                if detection is not None:
+                    return detection
+
+            # Search failed. Return to original center heading.
+            turn_and_record(
+                "TURN_LEFT",
+                self.BIN_SEARCH_MAX_OFFSET_DEGREES,
+                "SEARCH_BIN_RETURN_CENTER_FROM_RIGHT",
+            )
+
+        #     detection = check_current_heading()
+        #     if detection is not None:
+        #         return detection
+
+        # # Nothing on the right. Return exactly to the original
+        # # bin-facing heading before scanning the left side.
+        # turn_and_record(
+        #     "TURN_LEFT",
+        #     self.BIN_SEARCH_MAX_OFFSET_DEGREES,
+        #     "SEARCH_BIN_RETURN_CENTER_FROM_RIGHT",
+        # )
+
+        # # Scan left in small increments to -90 degrees.
+        # for step in range(1, max_side_steps + 1):
+        #     if self.stop_event.is_set():
+        #         raise RuntimeError(
+        #             "Bin search was stopped."
+        #         )
+
+        #     turn_and_record(
+        #         "TURN_LEFT",
+        #         self.BIN_SEARCH_STEP_DEGREES,
+        #         (
+        #             "SEARCH_BIN_LEFT "
+        #             f"OFFSET={step * self.BIN_SEARCH_STEP_DEGREES:.0f}"
+        #         ),
+        #     )
+
+        #     detection = check_current_heading()
+        #     if detection is not None:
+        #         return detection
+
+        # # Search failed. Restore the original heading before raising
+        # # the error so the robot never remains parked at -90 degrees.
+        # turn_and_record(
+        #     "TURN_RIGHT",
+        #     self.BIN_SEARCH_MAX_OFFSET_DEGREES,
+        #     "SEARCH_BIN_RETURN_CENTER_FROM_LEFT",
+        # )
 
         self.current_bin_target = None
 

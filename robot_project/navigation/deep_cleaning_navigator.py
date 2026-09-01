@@ -36,13 +36,19 @@ class DeepCleaningNavigator:
     SECOND_TURN_ANGLE_DEGREES = 83.0
     TURN_SETTLE_SECONDS = 1.0
 
-    LANE_SHIFT_DURATION_MS = 400
+    LANE_SHIFT_DURATION_MS = 350
 
     SHIFT_SETTLE_SECONDS = 2.0
     BEFORE_SHIFT_SETTLE_SECONDS = 1.0
     AFTER_SHIFT_SETTLE_SECONDS = 2.0
 
-    MAX_LANES = 3
+    # Objects that may still be detected by the camera
+    # but must never interrupt deep cleaning.
+    IGNORED_TARGET_LABELS = {
+        "building_block",
+    }
+
+    MAX_LANES = 4
 
     def __init__(
         self,
@@ -553,8 +559,19 @@ class DeepCleaningNavigator:
         if target is None:
             return None
 
-        return target.copy()
+        # Deep cleaning must ignore selected classes even
+        # though the camera can still detect/display them.
+        if (
+            target.get("label")
+            in self.IGNORED_TARGET_LABELS
+        ):
+            if self.clear_confirmed_target is not None:
+                self.clear_confirmed_target()
 
+            return None
+
+        return target.copy()    
+    
     def _wait_for_close_object_confirmation(
         self,
     ) -> Optional[dict]:

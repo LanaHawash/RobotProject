@@ -1,68 +1,105 @@
-# Toy-Sorting Mobile Robot
+hreshold:     0.25
+Command-listen period:  12 seconds
+Audio chunk samples:    1280
+```
 
-An autonomous mobile robot built around a Raspberry Pi 5 and Arduino Uno that can detect and sort toy objects, perform a ZikZak room-coverage movement pattern, respond to voice commands, detect possible baby crying, play lullabies, and send Firebase notifications.
+Audio thresholds should be tuned using recordings from the actual robot environment.
 
-The project combines computer vision, stereo depth, ultrasonic sensing, IMU-controlled movement, a robotic arm, voice recognition, audio classification, and a Flask web interface.
+Motor noise, fans, room echo, microphone placement, and speaker feedback can affect recognition.
 
 ---
 
-## Main Features
+# Development Notes
 
-The current project supports four main capabilities:
+# RoboCare – Autonomous Toy-Sorting and Deep-Cleaning Robot
+
+**Final Graduation Hardware Project**
+
+RoboCare is an autonomous mobile robot built around a Raspberry Pi 5 and Arduino Uno. The robot combines computer vision, stereo depth, ultrasonic sensing, IMU-controlled motion, a robotic arm, voice interaction, baby-cry detection, Firebase notifications, manual remote driving, and a Flask-based monitoring interface.
+
+This repository represents the final software implementation used for the completed graduation project.
+
+---
+
+## Main Capabilities
+
+RoboCare currently supports:
 
 1. **Autonomous toy sorting**
-   - Detect toys with a custom YOLO model.
-   - Track detections with ByteTrack.
-   - Confirm a stable target.
-   - Navigate toward the object.
-   - Pick it up using the robotic arm.
-   - Return toward the starting/bin area.
-   - Detect the correct colored bin.
+   - Detect objects using a custom Ultralytics YOLO model.
+   - Track detections using ByteTrack.
+   - Confirm stable objects over multiple camera frames.
+   - Align with and approach a selected object.
+   - Use ultrasonic sensing for final pickup positioning.
+   - Pick up the object using a servo robotic arm.
+   - Return toward the starting area.
+   - Detect the correct colored destination bin.
    - Release the object.
-   - Automatically begin another sorting cycle.
+   - Return toward the object-search environment.
+   - Automatically wait for the next object.
 
-2. **Deep-cleaning / ZikZak navigation**
-   - Drive through multiple room lanes.
-   - Stop near a wall using the ultrasonic sensor.
-   - Turn into the next lane.
-   - Shift sideways by a calibrated amount.
-   - Alternate travel direction between lanes.
-   - Stop after the configured maximum number of lanes.
+2. **Deep-cleaning / zig-zag room navigation**
+   - Traverse multiple room lanes.
+   - Detect the end wall using the ultrasonic sensor.
+   - Alternate lane direction.
+   - Perform calibrated lane transitions.
+   - Detect eligible objects while cleaning.
+   - Pause the current cleaning lane when an object is confirmed.
+   - Sort the object.
+   - Return to the exact interrupted-lane origin using reverse movement replay.
+   - Restore the original lane heading.
+   - Resume the interrupted cleaning lane.
 
-3. **Voice commands**
-   - Wake word: `Hey Robo`
-   - Supported commands:
-     - `start navigation`
-     - `start deep cleaning`
-     - `stop`
-    
+3. **Voice interaction**
+   - Custom wake word: `Hey Robo`.
+   - Spoken acknowledgement using `espeak-ng`.
+   - Offline command recognition using Vosk.
+   - Commands for starting navigation, starting deep cleaning, and stopping the robot.
 
 4. **Baby monitoring**
-   - Detect possible baby crying using YAMNet.
-   - Send a Firebase Cloud Messaging notification.
-   - Stop microphone capture temporarily.
-   - Play a lullaby through the Raspberry Pi audio output.
-   - Restart microphone monitoring when playback finishes.
+   - Continuous YAMNet-based baby-cry detection.
+   - Firebase Cloud Messaging notification.
+   - Automatic lullaby playback.
+   - Automatic microphone restart after playback.
+
+5. **Manual remote driving**
+   - Forward.
+   - Backward.
+   - Left.
+   - Right.
+   - Stop.
+   - Manual driving is disabled while autonomous navigation is active.
+
+6. **Web monitoring and control**
+   - Live annotated RGB camera stream.
+   - Depth visualization.
+   - Navigation status.
+   - Deep-cleaning status.
+   - Dataset capture interface.
+   - Emergency stop.
+   - Manual-drive API.
+   - Firebase device-token registration.
+   - Live audio playback from a connected client through WebSocket.
 
 ---
 
-## Hardware
+# Hardware
 
-The current robot uses:
+The final robot uses:
 
-- Raspberry Pi 5.
-- Luxonis OAK-D depth camera.
-- Arduino Uno.
-- L298N dual H-bridge motor driver.
-- Four DC TT motors.
-- Four-wheel mobile chassis.
-- MPU-6050 accelerometer and gyroscope.
-- Ultrasonic distance sensor.
-- PCA9685 16-channel PWM servo controller.
-- Multi-servo robotic arm and gripper.
-- Two INMP441 I2S microphones.
-- Speaker or Bluetooth/audio-output device.
-- Separate regulated power supplies for computing, motors, and servos.
+- Raspberry Pi 5
+- Luxonis OAK-D depth camera
+- Arduino Uno
+- L298N dual H-bridge motor driver
+- Four DC TT motors
+- Four-wheel mobile chassis
+- MPU-6050 accelerometer and gyroscope
+- Ultrasonic distance sensor
+- PCA9685 16-channel PWM servo controller
+- Multi-servo robotic arm and gripper
+- Two INMP441 I2S microphones
+- Speaker/audio-output device
+- Separate regulated power paths for computing, motors, and servos
 
 ---
 
@@ -70,39 +107,48 @@ The current robot uses:
 
 ```mermaid
 flowchart TD
-    A[OAK-D RGB and Stereo Depth] --> B[Camera Pipeline]
-    B --> C[YOLO + ByteTrack]
+    A[OAK-D RGB + Stereo Cameras] --> B[DepthAI Camera Pipeline]
+    B --> C[YOLO Detection + ByteTrack]
     C --> D[Object Selector]
-    D --> E[Target Navigator]
 
-    E --> F[Movement History]
-    E --> G[Bin Color Detector]
-    E --> H[Arduino Controller]
+    D --> E[Standalone Target Navigator]
+    D --> F[Deep Cleaning Navigator]
 
-    I[Deep Cleaning Navigator] --> H
+    F --> G[Deep Cleaning Target Navigator]
 
-    J[INMP441 Stereo Microphones] --> K[Microphone Service]
-    K --> L[Audio Service]
+    E --> H[Movement History]
+    G --> H
 
-    L --> M[openWakeWord]
-    L --> N[Vosk]
-    L --> O[YAMNet]
+    E --> I[Bin Color Detector]
+    G --> I
 
-    N --> E
-    N --> I
+    E --> J[Arduino Controller]
+    F --> J
+    G --> J
 
-    O --> P[Firebase Notification]
-    O --> Q[Lullaby Playback]
+    K[Manual Drive API] --> L[Manual Drive Controller]
+    L --> J
 
-    H --> R[Arduino Uno]
-    R --> S[Drive Motors]
-    R --> T[MPU-6050]
-    R --> U[Ultrasonic Sensor]
-    R --> V[PCA9685 + Arm]
+    M[INMP441 Stereo Microphones] --> N[Microphone Service]
+    N --> O[Audio Service]
 
-    B --> W[Flask Web Interface]
-    E --> W
-    I --> W
+    O --> P[openWakeWord]
+    O --> Q[Vosk]
+    O --> R[YAMNet]
+
+    Q --> E
+    Q --> F
+
+    R --> S[Firebase Notification]
+    R --> T[Lullaby Playback]
+
+    J --> U[Arduino Uno]
+    U --> V[L298N + Drive Motors]
+    U --> W[MPU-6050]
+    U --> X[Ultrasonic Sensor]
+    U --> Y[PCA9685 + Robotic Arm]
+
+    B --> Z[Flask Web Interface]
 ```
 
 ---
@@ -111,60 +157,99 @@ flowchart TD
 
 The Raspberry Pi performs the high-level processing and behavior control.
 
-It:
+It is responsible for:
 
-- Runs the OAK-D camera pipeline.
-- Processes RGB and stereo-depth frames.
-- Runs YOLO object detection.
-- Runs ByteTrack tracking.
-- Confirms stable targets.
-- Controls object-navigation decisions.
-- Maintains movement history.
-- Detects colored destination bins.
-- Coordinates pickup, return, release, and repeated sorting cycles.
-- Runs deep-cleaning/ZikZak navigation.
-- Captures stereo microphone audio.
-- Detects the `Hey Robo` wake word.
-- Recognizes robot commands with Vosk.
-- Detects possible baby crying using YAMNet.
-- Plays lullabies.
-- Sends Firebase notifications.
-- Hosts the Flask monitoring and control interface.
+- Running the OAK-D camera pipeline.
+- Processing RGB and aligned stereo-depth frames.
+- Running YOLO inference.
+- Running ByteTrack.
+- Confirming stable object candidates.
+- Selecting navigation targets.
+- Coordinating autonomous object approach.
+- Maintaining movement history.
+- Estimating standalone return-home movement.
+- Detecting destination-bin colors.
+- Coordinating pickup and release operations.
+- Running the deep-cleaning zig-zag mission.
+- Handling object interruptions during deep cleaning.
+- Returning to interrupted cleaning lanes.
+- Capturing stereo microphone audio.
+- Detecting the `Hey Robo` wake word.
+- Recognizing commands with Vosk.
+- Running YAMNet baby-cry detection.
+- Playing speech and lullabies.
+- Sending Firebase notifications.
+- Handling manual-drive commands.
+- Hosting the Flask monitoring/control application.
 
 ---
 
 # Arduino Responsibilities
 
-The Arduino handles low-level physical hardware control.
+The Arduino performs the low-level physical control.
 
-It:
+It is responsible for:
 
-- Controls the L298N motor driver.
-- Executes forward and backward movement.
-- Executes IMU-controlled turns.
-- Runs heartbeat-protected continuous forward movement.
-- Reads ultrasonic distance.
-- Reads and calibrates the MPU-6050.
-- Controls the PCA9685 servo driver.
-- Controls the robotic arm and gripper.
-- Performs pickup positioning.
-- Performs grab, lift, and release sequences.
-- Accepts an interrupting `STOP` command.
-- Returns structured responses to the Raspberry Pi over USB serial.
+- L298N motor control.
+- Forward and backward timed movement.
+- Continuous forward movement with a watchdog.
+- Manual forward/backward/left/right driving.
+- Manual-drive watchdog timeout.
+- MPU-6050 gyro calibration.
+- Closed-loop gyro-based turns.
+- Ultrasonic distance measurement.
+- Final ultrasonic pickup positioning.
+- PCA9685 servo control.
+- Robotic-arm pickup sequences.
+- Robotic-arm release sequences.
+- Emergency `STOP` handling.
+- Structured USB-serial responses to the Raspberry Pi.
+
+The Raspberry Pi communicates with the Arduino using:
+
+```text
+/dev/ttyACM0
+115200 baud
+```
 
 ---
 
-# Autonomous Toy Sorting
+# Computer Vision
 
-## Object Detection
+## OAK-D Camera
 
-The active detection system uses a custom Ultralytics YOLO model located at:
+The active camera pipeline runs at:
+
+```text
+Resolution: 640 x 480
+FPS:        30
+```
+
+Stereo depth is aligned to the RGB camera so depth and RGB coordinates correspond.
+
+The camera pipeline is implemented in:
+
+```text
+robot_project/camera/pipeline.py
+```
+
+---
+
+# YOLO Object Detection
+
+The active detector uses a custom Ultralytics YOLO model:
 
 ```text
 models/oak/best.pt
 ```
 
-The model file is not stored in Git and must be installed manually.
+The trained model is intentionally not stored in Git because `*.pt` files are ignored.
+
+The active inference call uses:
+
+```text
+confidence threshold: 0.20
+```
 
 The custom ByteTrack configuration is located at:
 
@@ -172,105 +257,274 @@ The custom ByteTrack configuration is located at:
 config/trackers/bytetrack_robot.yaml
 ```
 
-The detector provides information including:
+ByteTrack is configured with persistent tracking between frames.
 
-- Class label.
-- Confidence.
-- Bounding box.
-- Center coordinates.
-- Track information.
-- Stereo-depth estimate when available.
+Each detection can contain:
 
----
+- Object class
+- Confidence
+- Bounding box
+- Image center
+- Track ID
+- Median stereo-depth estimate
 
-## Supported Object Classes
-
-| Detected class | Destination | Bin color |
-|---|---|---|
-| `animal` | `animal` | Yellow |
-| `toy_car` | `toy_car` | Red |
-| `building_block` | `building_block` | Blue |
-| Low-confidence confirmed target | `discharge` | Black |
-
-A low-confidence target that still passes the minimum confirmation requirements is sent to the black discharge bin.
+Depth information is available for status/display purposes but is not required for the current camera navigation target.
 
 ---
 
-## Target Confirmation
+# Object Selection
 
-The object selector confirms a target over multiple frames instead of immediately driving toward the first detection.
+Object selection is implemented in:
 
-Current behavior includes:
+```text
+robot_project/detection/object_selector.py
+```
 
-- Minimum usable confidence around `0.20`.
-- Normal confidence threshold around `0.40`.
-- Normal confirmation using multiple consecutive frames.
-- Additional confirmation for uncertain detections.
-- Spatial consistency checks between frames.
+The robot does not immediately select the first visible detection.
 
-The largest stable visible candidate is preferred.
+The selector checks whether approximately the same class remains spatially stable over several camera frames.
+
+Current selection settings are:
+
+```text
+Minimum detection confidence:   0.20
+Normal confidence threshold:    0.40
+Normal confirmation frames:        5
+Uncertain confirmation frames:     8
+Maximum center movement:         80 px
+```
+
+Among valid detections, the selector prefers the object occupying the largest image area.
+
+For normal-confidence detections, the destination is the detected object class.
+
+For lower-confidence detections that still satisfy the minimum confidence and extended confirmation requirement, the destination becomes:
+
+```text
+discharge
+```
+
+The current confirmation logic primarily uses class and image-position consistency. Although ByteTrack IDs are generated by the detector, the active object selector does not use the track ID as its confirmation identity.
 
 ---
 
-## Object Navigation
+# Sorting Classes and Destination Bins
 
-The main target-navigation implementation is:
+| Object / destination | Bin color |
+|---|---|
+| `animal` | Yellow |
+| `toy_car` | Red |
+| `building_block` | Blue |
+| `discharge` | Black |
+
+The `discharge` destination is used for uncertain but sufficiently confirmed detections.
+
+## Deep-Cleaning Exception
+
+`building_block` is intentionally excluded from object selection while deep-cleaning mode is running.
+
+The camera may still detect and display a building block, but it will not interrupt deep cleaning.
+
+This behavior is configured by:
+
+```python
+IGNORED_TARGET_LABELS = {
+    "building_block",
+}
+```
+
+in:
+
+```text
+robot_project/navigation/deep_cleaning_navigator.py
+```
+
+Standalone autonomous sorting can still use the configured blue `building_block` destination.
+
+---
+
+# Standalone Autonomous Sorting
+
+Standalone target navigation is implemented in:
 
 ```text
 robot_project/navigation/target_navigator.py
 ```
 
-The navigator:
+A normal sorting cycle performs approximately the following sequence:
 
-1. Locks the confirmed object and destination.
-2. Aligns horizontally using the camera.
-3. Moves toward the object.
-4. Monitors target freshness and alignment.
-5. Uses ultrasonic measurements at close range.
-6. Positions the robot for pickup.
-7. Commands the Arduino arm sequence.
-8. Records robot movements.
-9. Estimates a return route.
-10. Finds the correct destination bin.
-11. Aligns with the bin.
-12. Approaches the bin.
-13. Releases the object.
-14. Resets for another sorting cycle.
+```text
+Confirm object
+    ↓
+Lock object class and destination
+    ↓
+Camera alignment
+    ↓
+Camera-guided approach
+    ↓
+Ultrasonic monitoring
+    ↓
+Ultrasonic pickup positioning
+    ↓
+Robotic-arm pickup
+    ↓
+Estimate return to starting area
+    ↓
+Face bins
+    ↓
+Find locked bin color
+    ↓
+Align with bin
+    ↓
+Approach bin
+    ↓
+Release object
+    ↓
+Return toward starting area
+    ↓
+Face object-search environment
+    ↓
+Clear previous cycle
+    ↓
+Wait for next confirmed object
+```
 
 ---
 
-# Return Navigation
+# Object Approach
 
-Robot movements are stored by:
+The target navigator initially aligns the selected object using its image position.
+
+Important current thresholds include:
+
+```text
+Initial center tolerance:             70 px
+Driving center tolerance:             95 px
+Required centered updates:             2
+
+Far distance:                         50 cm
+Medium distance:                      30 cm
+Pickup-positioning handoff:           15 cm
+Camera-loss ultrasonic handoff max:   16 cm
+Emergency distance:                    3 cm
+```
+
+The Arduino performs the final close-range pickup positioning.
+
+Its target is approximately:
+
+```text
+Pickup target:     5 cm
+Tolerance:         ±1 cm
+```
+
+The Arduino requires several stable ultrasonic measurements before accepting the final pickup position.
+
+---
+
+# Robotic Arm
+
+The robotic arm is controlled by the Arduino through the PCA9685.
+
+## PCA9685 Channels
+
+| Joint | Channel | Software range |
+|---|---:|---:|
+| Base | 0 | `0–180°` |
+| Shoulder | 4 | `0–180°` |
+| Elbow | 8 | `10–130°` |
+| Gripper | 12 | `100–170°` |
+
+Important gripper positions in the final firmware include:
+
+```text
+Grip / carry:   120°
+Open / release: 160°
+```
+
+Mechanical limits should not be widened without physically checking the arm.
+
+---
+
+# Movement History
+
+Robot movement history is implemented in:
 
 ```text
 robot_project/navigation/movement_history.py
 ```
 
-The current return system uses dead reckoning.
+The system records:
 
-It estimates:
+- Forward movement duration
+- Backward movement duration
+- Actual gyro-reported left turns
+- Actual gyro-reported right turns
+- Ultrasonic positioning pulses
 
-- Final X/Y position.
-- Robot heading.
-- Bearing back toward the origin.
-- Approximate return distance.
-
-The result is affected by:
-
-- Wheel slip.
-- Floor material.
-- Motor differences.
-- Battery voltage.
-- Robot payload.
-- Wheel diameter.
-- Movement calibration.
-
-The system currently does not use wheel encoders or external localization.
+Movement history is used differently by standalone navigation and deep-cleaning interruption recovery.
 
 ---
 
-# Deep Cleaning / ZikZak Mode
+# Standalone Return-Home Navigation
+
+Standalone autonomous sorting uses dead reckoning.
+
+The system estimates:
+
+```text
+X position
+Y position
+Heading
+Distance to origin
+Bearing to origin
+```
+
+Linear distance is estimated from motor run time using:
+
+```python
+CM_PER_MS = 0.055
+```
+
+The return algorithm then turns once toward the estimated starting point and drives approximately straight back.
+
+Current duration scaling is:
+
+```text
+Object-route return scale: 0.52
+Bin-route return scale:    0.40
+```
+
+This return method is open-loop for translation because the robot does not use wheel encoders or an external localization system.
+
+Gyro-reported turn angles are used for heading estimation, but translational error can still accumulate due to:
+
+- Wheel slip
+- Floor material
+- Motor differences
+- Battery voltage
+- Payload
+- Wheel diameter
+- Mechanical alignment
+- Timing calibration
+
+---
+
+# IMU Behavior
+
+The Arduino calibrates its MPU-6050 gyro during startup.
+
+Runtime recalibration between standalone sorting cycles is currently intentionally disabled:
+
+```python
+ENABLE_RUNTIME_IMU_RECALIBRATION = False
+```
+
+Therefore subsequent automatic sorting cycles continue using the startup gyro bias.
+
+---
+
+# Deep Cleaning / Zig-Zag Mode
 
 Deep-cleaning navigation is implemented in:
 
@@ -278,80 +532,224 @@ Deep-cleaning navigation is implemented in:
 robot_project/navigation/deep_cleaning_navigator.py
 ```
 
-This mode is separate from target-search navigation.
-
-Target navigation and deep cleaning cannot run at the same time.
-
----
-
-## Movement Pattern
-
-The current ZikZak pattern works as follows:
-
-1. Start in lane 1.
-2. Drive forward while monitoring ultrasonic distance.
-3. Stop when the wall reaches the configured minimum distance.
-4. Turn toward the next lane.
-5. Move forward briefly to shift sideways.
-6. Turn again in the same direction.
-7. Drive the next lane in the opposite longitudinal direction.
-8. Repeat the process.
-9. Stop when the configured number of lanes is completed.
-
-Odd and even lanes alternate between traveling away from and toward the starting/bin side.
-
----
-
-## Current Deep-Cleaning Calibration
-
-The current values in `deep_cleaning_navigator.py` are:
+Deep-cleaning object sorting is implemented separately in:
 
 ```text
-Wall stop distance:       25 cm
-Maximum lane drive time:  8 seconds
-First turn angle:         85 degrees
-Second turn angle:        83 degrees
-Lane shift duration:      400 ms
-Maximum lanes:            4
+robot_project/navigation/deep_cleaning_target_navigator.py
 ```
 
-These are physical calibration values and should be changed only after observing the real robot.
+Standalone navigation and deep cleaning cannot run simultaneously.
 
-The lane shift is controlled by:
+---
 
-```python
-LANE_SHIFT_DURATION_MS = 400
+## Zig-Zag Pattern
+
+The robot starts in lane 1 and drives away from the bin side.
+
+When the wall is reached:
+
+1. Stop.
+2. Turn toward the next lane.
+3. Drive forward for the calibrated lane-shift duration.
+4. Turn again in the same direction.
+5. Enter the next lane.
+6. Drive in the opposite longitudinal direction.
+
+The lane-transition turn direction alternates:
+
+```text
+After odd lane  -> LEFT transition
+After even lane -> RIGHT transition
 ```
 
-Increase this value if the robot needs to move farther sideways between lanes.
+Odd-numbered lanes travel:
 
-Decrease it if the lane spacing is too large.
+```text
+AWAY_FROM_BINS
+```
 
-The maximum number of lanes is controlled by:
+Even-numbered lanes travel:
+
+```text
+TOWARD_BINS
+```
+
+---
+
+# Current Deep-Cleaning Calibration
+
+The current final source code uses:
+
+```text
+Wall stop distance:        25 cm
+Maximum lane drive time:    8 seconds
+First turn angle:          83°
+Second turn angle:         83°
+Lane shift duration:      350 ms
+Maximum lanes:              4
+```
+
+These values are defined in:
+
+```text
+robot_project/navigation/deep_cleaning_navigator.py
+```
+
+The relevant constants are:
 
 ```python
+WALL_STOP_DISTANCE_CM = 25.0
+MAX_LANE_DRIVE_SECONDS = 8.0
+FIRST_TURN_ANGLE_DEGREES = 83.0
+SECOND_TURN_ANGLE_DEGREES = 83.0
+LANE_SHIFT_DURATION_MS = 350
 MAX_LANES = 4
 ```
 
-The temporary lane safety timeout is controlled by:
+These are physical calibration values and are specific to the final robot.
 
-```python
-MAX_LANE_DRIVE_SECONDS = 8.0
+---
+
+# Object Sorting During Deep Cleaning
+
+Deep cleaning continuously checks for a confirmed eligible object.
+
+If an object is detected while driving a lane:
+
+```text
+Drive lane
+    ↓
+Object confirmed
+    ↓
+Stop cleaning movement
+    ↓
+Store interrupted lane
+    ↓
+Sort one object
+    ↓
+Deliver object to its bin
+    ↓
+Reverse recorded movement route
+    ↓
+Return to interruption point
+    ↓
+Restore lane heading
+    ↓
+Validate lane identity/direction
+    ↓
+Resume same lane
 ```
 
-A lane that does not reach a wall within this time stops with a safety timeout.
+Time spent sorting the object is excluded from the lane's eight-second movement safety timer.
+
+---
+
+# Deep-Cleaning Return Policy
+
+Unlike standalone return-home navigation, the deep-cleaning sorter does not use dead-reckoning position estimation to return to the interrupted lane.
+
+It uses:
+
+```text
+EXACT_REVERSE_REPLAY
+```
+
+The sorter records every movement made after the interruption point and then executes the literal inverse route in reverse order.
+
+For example:
+
+```text
+FORWARD      -> BACKWARD
+BACKWARD     -> FORWARD
+TURN_LEFT    -> TURN_RIGHT
+TURN_RIGHT   -> TURN_LEFT
+```
+
+After successful replay, the system verifies:
+
+- Correct lane number
+- Correct bin direction
+- Correct lane travel direction
+- Successful return to the interrupted lane
+- Restored lane heading
+- Correct `EXACT_REVERSE_REPLAY` return policy
+
+Deep cleaning resumes only after these checks succeed.
+
+---
+
+# Obstacle-Avoidance Module
+
+The repository contains:
+
+```text
+robot_project/navigation/obstacle_avoidance.py
+```
+
+This is an isolated experimental/demo helper that implements a fixed right-side detour and records the maneuver in `MovementHistory`.
+
+However, in the current final runtime:
+
+**`ObstacleAvoidance` is not imported or instantiated by `TargetNavigator`, `DeepCleaningNavigator`, or the main Flask application.**
+
+Therefore obstacle avoidance is currently present in the repository but is **not an active autonomous-navigation feature**.
+
+---
+
+# Manual Driving
+
+Manual driving is implemented by:
+
+```text
+robot_project/hardware/manual_drive_controller.py
+robot_project/web/manual_drive_routes.py
+```
+
+Supported commands are:
+
+```text
+FORWARD
+BACKWARD
+LEFT
+RIGHT
+STOP
+```
+
+Commands are sent to the web API using:
+
+```text
+POST /movement
+```
+
+Example JSON:
+
+```json
+{
+  "command": "FORWARD"
+}
+```
+
+Manual movement is rejected while standalone autonomous navigation or deep cleaning is active.
+
+The Arduino also has a manual-drive safety timeout:
+
+```text
+3000 ms
+```
+
+If no new manual command is received before the watchdog expires, the motors stop automatically.
 
 ---
 
 # Audio System
 
-Audio-related code is located in:
+Audio code is located under:
 
 ```text
 robot_project/audio/
 ```
 
-Important files include:
+Important modules include:
 
 ```text
 audio_service.py
@@ -365,21 +763,48 @@ wake_word.py
 
 ---
 
-## Microphones
+# INMP441 Microphones
 
-The robot currently uses two INMP441 I2S microphones.
+The robot uses two INMP441 I2S microphones.
 
-The configured capture format is:
+Current capture settings are:
 
 ```text
-Sample rate: 16000 Hz
-Channels: 2
-Format: signed 16-bit PCM
+Sample rate:      16000 Hz
+Input channels:   2
+Model channels:   1
+Sample format:    signed 16-bit PCM
+Chunk size:       1280 samples
+Microphone gain:  3.0
 ```
 
-`robot_project/audio/microphone.py` captures stereo audio and converts it to mono before sending it to the AI models.
+The configured input-device name is:
 
-The configured sound-device name is:
+```text
+inmp441
+```
+
+Stereo microphone samples are averaged into a mono signal before being passed to the AI models.
+
+---
+
+# INMP441 Device-Tree Overlay
+
+The repository contains:
+
+```text
+inmp441-stereo.dts
+```
+
+This file defines the Raspberry Pi I2S stereo microphone configuration.
+
+After configuring the overlay, verify the input device with:
+
+```bash
+arecord -l
+```
+
+The Python application expects the device to be visible to PortAudio / `sounddevice` using the name:
 
 ```text
 inmp441
@@ -387,153 +812,121 @@ inmp441
 
 ---
 
-## INMP441 Device-Tree Overlay
+# Wake Word
 
-The repository includes:
-
-```text
-inmp441-stereo.dts
-```
-
-This defines the Raspberry Pi I2S stereo microphone device.
-
-After configuring the overlay on the Raspberry Pi, confirm that the audio device is available with tools such as:
-
-```bash
-arecord -l
-```
-
-The Python audio system expects the INMP441 input device to be available to PortAudio/sounddevice.
-
----
-
-# Voice Commands
-
-Voice control uses two systems:
+Wake-word recognition uses:
 
 ```text
-openWakeWord -> wake-word detection
-Vosk         -> command recognition
+openWakeWord
 ```
 
-The configured wake word is:
-
-```text
-Hey Robo
-```
-
-After the wake word is detected, the system listens for a command.
-
-Supported commands are:
-
-```text
-start navigation
-start deep cleaning
-stop
-
-```
-
-`stop` triggers the emergency-stop behavior.
-
----
-
-# Audio Models
-
-Audio AI models are intentionally excluded from Git.
-
-The `.gitignore` contains:
-
-```text
-models/audio/
-```
-
-You must install these models manually on the Raspberry Pi.
-
----
-
-## Vosk Model
-
-Expected location:
-
-```text
-models/audio/vosk/vosk-model-small-en-us-0.15/
-```
-
-The directory should contain the normal Vosk model files.
-
----
-
-## openWakeWord Model
-
-Expected custom model:
+The custom model is expected at:
 
 ```text
 models/audio/openwakeword/hey_robo.onnx
 ```
 
-If this file does not exist, the wake-word detector will fail during startup.
+Wake word:
+
+```text
+Hey Robo
+```
+
+Current wake-word threshold:
+
+```text
+0.03
+```
+
+After detecting the wake word, RoboCare temporarily stops microphone capture and says:
+
+```text
+How can I help?
+```
+
+using `espeak-ng`.
+
+The microphones are then restarted and the robot listens for a command.
 
 ---
 
-## YAMNet Model
+# Voice Commands
 
-YAMNet is expected under:
+Command recognition uses offline Vosk speech recognition.
 
-```text
-models/audio/yamnet/
-```
-
-The cry detector searches this directory for a subdirectory containing:
+The Vosk model is expected at:
 
 ```text
-saved_model.pb
+models/audio/vosk/vosk-model-small-en-us-0.15/
 ```
+
+Current supported commands are:
+
+```text
+start navigation
+start deep cleaning
+stop
+```
+
+The maximum command-listening period after the wake word is:
+
+```text
+30 seconds
+```
+
+`stop` invokes the system emergency-stop behavior.
 
 ---
 
 # Baby-Cry Detection
 
-Baby-cry detection is implemented by:
+Baby-cry detection uses YAMNet.
+
+The YAMNet SavedModel must exist below:
 
 ```text
-robot_project/audio/cry_detector.py
+models/audio/yamnet/
 ```
 
-The current system uses YAMNet's:
+The detector searches for a directory containing:
+
+```text
+saved_model.pb
+```
+
+The target YAMNet class is:
 
 ```text
 Baby cry, infant cry
 ```
 
-class.
-
-The current detection threshold is:
+Current detection threshold:
 
 ```text
-0.25
+0.60
 ```
 
-Audio is accumulated into approximately one-second windows before being processed.
+Approximately one second of audio is processed for each cry-detection window.
 
 When crying is detected:
 
-1. A Firebase notification is sent.
-2. Microphone capture is stopped temporarily.
+1. A Firebase notification is started asynchronously.
+2. Microphone capture is stopped.
 3. A lullaby is played.
-4. The audio service is reset.
-5. Microphone monitoring starts again.
+4. Audio-service state is reset.
+5. Microphone capture is restarted.
 
 ---
 
 # Lullaby Playback
 
-The current songs are stored in:
+Lullabies are stored under:
 
 ```text
 robot_project/audio/sounds/
 ```
 
-Current files include:
+Current audio files are:
 
 ```text
 twinkle-twinkle-little-star.mp3
@@ -545,55 +938,92 @@ A song is selected randomly.
 Playback uses:
 
 ```text
-ffplay
+mpg123
 ```
 
-Therefore FFmpeg must be installed on the Raspberry Pi.
+The playback process is limited to approximately 20 seconds by the Python application.
 
-Example:
+---
 
-```bash
-sudo apt update
-sudo apt install -y ffmpeg
+# Live Talk
+
+The Flask application also exposes a WebSocket endpoint:
+
+```text
+/audio/talk
 ```
+
+Incoming raw mono audio is sent to:
+
+```text
+aplay
+```
+
+using:
+
+```text
+S16_LE
+16000 Hz
+1 channel
+```
+
+This allows a compatible client to play live audio through the robot's speaker.
 
 ---
 
 # Firebase Notifications
 
-Firebase Cloud Messaging is used to notify another device when possible baby crying is detected.
+Firebase Cloud Messaging is used for baby-cry notifications.
 
-The service-account file is expected at:
+The Firebase service-account file must exist locally at:
 
 ```text
 config/firebase-service-account.json
 ```
 
-This file is intentionally ignored by Git and must be installed manually.
+This file is excluded by `.gitignore` and must not be committed.
 
-Do **not** commit Firebase service-account credentials.
+The main application does **not** contain a fixed FCM device token.
 
-The current application initializes Firebase during robot startup, so the service-account file must exist before running `main.py`.
+Instead, a client registers its current token at runtime using:
 
-There is also a test script:
+```text
+POST /firebase/register-token
+```
+
+with:
+
+```json
+{
+  "token": "<FCM_DEVICE_TOKEN>"
+}
+```
+
+If no token has been registered, baby-cry notification sending is skipped.
+
+## Firebase Test Script
+
+The repository also contains:
 
 ```text
 test_firebase_notification.py
 ```
 
-The current application code contains an FCM device token directly in the Python source. For a production deployment, move device tokens and secrets into environment variables or another local configuration source instead of committing them to Git.
+This is a development/testing utility and should not be treated as production configuration.
+
+Real FCM registration tokens should preferably be supplied through environment/local configuration rather than permanently committed to a public repository.
 
 ---
 
 # Web Interface
 
-The Flask application runs on:
+The Flask server runs on:
 
 ```text
 0.0.0.0:5000
 ```
 
-Start the robot with:
+Start the system with:
 
 ```bash
 python main.py
@@ -607,46 +1037,56 @@ http://<raspberry-pi-ip>:5000
 
 ---
 
-## Current Endpoints
+# Web/API Endpoints
 
-| Endpoint | Purpose |
-|---|---|
-| `/` | Main robot-control and camera page |
-| `/video` | Annotated RGB video |
-| `/depth` | Depth visualization |
-| `/capture` | Dataset capture interface |
-| `/capture_video` | Raw capture stream |
-| `/save` | Save current camera frame |
-| `/status` | Main system status |
-| `/navigation/start` | Start autonomous toy navigation |
-| `/navigation/stop` | Stop target navigation |
-| `/navigation/return` | Start manual return behavior |
-| `/navigation/status` | Detailed navigation status |
-| `/deep-cleaning/start` | Start ZikZak deep-cleaning mode |
-| `/deep-cleaning/stop` | Stop deep-cleaning mode |
-| `/deep-cleaning/status` | Deep-cleaning state and calibration |
-| `/emergency-stop` | Stop target navigation, deep cleaning, and motors |
-| `/audio/lullaby/play` | Manually play a baby lullaby |
+| Endpoint | Method / type | Purpose |
+|---|---|---|
+| `/` | GET | Main robot page |
+| `/video` | GET | Annotated RGB stream |
+| `/depth` | GET | Depth visualization |
+| `/capture` | GET | Dataset capture page |
+| `/capture_video` | GET | Raw capture stream |
+| `/save` | GET | Save current camera frame |
+| `/status` | GET | Overall system status |
+| `/navigation/start` | GET | Start standalone sorting |
+| `/navigation/stop` | GET | Stop standalone navigation |
+| `/navigation/return` | GET | Trigger standalone return behavior |
+| `/navigation/status` | GET | Detailed navigation status |
+| `/deep-cleaning/start` | GET | Start zig-zag cleaning |
+| `/deep-cleaning/stop` | GET | Stop deep cleaning |
+| `/deep-cleaning/status` | GET | Deep-cleaning status |
+| `/emergency-stop` | GET | Stop autonomous modes and motors |
+| `/movement` | POST | Manual drive command |
+| `/firebase/register-token` | POST | Register an FCM token |
+| `/audio/lullaby/play` | GET | Manually play a lullaby |
+| `/audio/talk` | WebSocket | Live speaker audio |
 
 ---
 
 # Emergency Stop
 
-The emergency-stop route is:
+The main software emergency-stop route is:
 
 ```text
 /emergency-stop
 ```
 
-It:
+It requests:
 
-1. Requests target navigation to stop.
-2. Requests deep-cleaning navigation to stop.
-3. Sends a direct motor stop to the Arduino.
+1. Standalone navigation stop.
+2. Deep-cleaning stop.
+3. Deep-cleaning object-sort stop when applicable.
+4. Direct Arduino motor stop.
 
-Always keep a physical power-disconnect method available during testing.
+The Arduino also accepts the exact serial command:
 
-Software emergency stops should not be treated as a replacement for safe electrical and mechanical design.
+```text
+STOP
+```
+
+during long-running operations.
+
+A physical power-disconnect method should still be available when operating or testing the robot.
 
 ---
 
@@ -669,39 +1109,19 @@ The MPU-6050 and PCA9685 share the Arduino I2C bus.
 
 ---
 
-# PCA9685 Servo Channels
-
-| Joint | Channel | Current software limits |
-|---|---:|---:|
-| Base | 0 | `0-180 degrees` |
-| Shoulder | 4 | `0-180 degrees` |
-| Elbow | 8 | `10-130 degrees` |
-| Gripper | 12 | `95-170 degrees` |
-
-Current gripper positions:
-
-```text
-Grab/Hold:    100 degrees
-Open/Release: 160 degrees
-```
-
-Do not widen servo limits without checking the arm mechanically.
-
----
-
 # Power Requirements
 
 Use separate regulated power paths where appropriate.
 
-- Raspberry Pi: suitable Raspberry Pi power supply or UPS.
+- Raspberry Pi: appropriate regulated Raspberry Pi supply / UPS.
 - Motors: motor supply through the L298N.
 - Servos: regulated servo supply connected to PCA9685 `V+`.
-- PCA9685 logic: controller logic voltage connected to `VCC`.
-- All communicating control systems must share an appropriate common ground.
+- PCA9685 logic: appropriate logic voltage connected to `VCC`.
+- Communicating systems must share the required common ground.
 
-Do not power the full servo rail from the Arduino or Raspberry Pi 5 V pin.
+Do not power the complete servo rail from an Arduino or Raspberry Pi GPIO power pin.
 
-Do not directly connect two independent regulated 5 V power outputs together.
+Do not directly connect independent regulated power-supply outputs together unless the power architecture is specifically designed for it.
 
 ---
 
@@ -718,13 +1138,13 @@ RobotProject/
 ├── config/
 │   ├── trackers/
 │   │   └── bytetrack_robot.yaml
-│   └── firebase-service-account.json   # local, ignored by Git
+│   └── firebase-service-account.json   # local / ignored
 │
 ├── models/
 │   ├── oak/
 │   │   ├── README.md
-│   │   └── best.pt                    # local, ignored by Git
-│   └── audio/                         # local, ignored by Git
+│   │   └── best.pt                    # local / ignored
+│   └── audio/                         # local / ignored
 │       ├── vosk/
 │       ├── openwakeword/
 │       │   └── hey_robo.onnx
@@ -755,18 +1175,22 @@ RobotProject/
 │   │
 │   ├── hardware/
 │   │   ├── arduino_controller.py
+│   │   ├── manual_drive_controller.py
 │   │   ├── serial_controller.py
 │   │   ├── test_arduino_serial.py
 │   │   └── test_movement_imu.py
 │   │
 │   ├── navigation/
 │   │   ├── deep_cleaning_navigator.py
+│   │   ├── deep_cleaning_target_navigator.py
 │   │   ├── movement_history.py
+│   │   ├── obstacle_avoidance.py
 │   │   └── target_navigator.py
 │   │
 │   ├── web/
 │   │   ├── app.py
-│   │   └── capture.py
+│   │   ├── capture.py
+│   │   └── manual_drive_routes.py
 │   │
 │   ├── world/
 │   │   ├── manager.py
@@ -781,12 +1205,20 @@ RobotProject/
 ├── create_lullaby.py
 ├── inmp441-stereo.dts
 ├── test_firebase_notification.py
+├── test_mics.py
 ├── main.py
 ├── requirements.txt
 └── README.md
 ```
 
-Historical `.issue6-backup` files are working copies and are not part of the active runtime.
+Files ending in names such as:
+
+```text
+.issue3-backup
+.issue6-backup
+```
+
+are historical development copies and are not part of the active runtime.
 
 ---
 
@@ -801,79 +1233,94 @@ cd RobotProject
 
 ---
 
-## 2. Install System Audio Dependencies
+## 2. Install Required System Audio Packages
 
 On Raspberry Pi OS:
 
 ```bash
 sudo apt update
-sudo apt install -y ffmpeg portaudio19-dev
+
+sudo apt install -y \
+    portaudio19-dev \
+    mpg123 \
+    espeak-ng \
+    alsa-utils
 ```
 
-`ffmpeg` provides `ffplay`, which is used for lullaby playback.
+These packages provide:
 
-PortAudio is used by the Python `sounddevice` package.
+```text
+PortAudio -> Python sounddevice input
+mpg123    -> lullaby playback
+espeak-ng -> robot speech acknowledgement
+aplay     -> live-talk playback
+```
 
 ---
 
-## 3. Create a Python Environment
+## 3. Create a Python Virtual Environment
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
+
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
-
-The current Python requirements include computer-vision, serial, audio, AI, and Firebase dependencies.
 
 ---
 
 ## 4. Install the YOLO Model
 
-Place the trained model at:
+Place the final trained YOLO model at:
 
 ```text
 models/oak/best.pt
 ```
 
-Verify it exists:
+Verify:
 
 ```bash
 python -c "from robot_project.config import YOLO_MODEL_PATH; print(YOLO_MODEL_PATH); print(YOLO_MODEL_PATH.exists())"
 ```
 
----
+The final line should print:
 
-## 5. Install Audio Models
-
-Create the required directories:
-
-```bash
-mkdir -p models/audio/vosk
-mkdir -p models/audio/openwakeword
-mkdir -p models/audio/yamnet
+```text
+True
 ```
 
-Install the Vosk model at:
+---
+
+## 5. Install the Vosk Model
+
+Expected path:
 
 ```text
 models/audio/vosk/vosk-model-small-en-us-0.15/
 ```
 
-Install the custom wake-word model at:
+---
+
+## 6. Install the openWakeWord Model
+
+Expected path:
 
 ```text
 models/audio/openwakeword/hey_robo.onnx
 ```
 
-Install/cache the YAMNet SavedModel under:
+---
+
+## 7. Install YAMNet
+
+The application expects:
 
 ```text
 models/audio/yamnet/
 ```
 
-The cry detector must be able to find a directory containing:
+to contain a TensorFlow SavedModel directory containing:
 
 ```text
 saved_model.pb
@@ -881,37 +1328,43 @@ saved_model.pb
 
 ---
 
-## 6. Configure Firebase
+## 8. Configure Firebase
 
-Place the Firebase service-account JSON file at:
+Place the Firebase service-account JSON at:
 
 ```text
 config/firebase-service-account.json
 ```
 
-Do not commit this file.
+The file is excluded from Git.
 
-It is excluded through `.gitignore`.
+Firebase initialization occurs during system startup, so this file must be available when running the full application.
+
+A client FCM registration token must then be supplied through:
+
+```text
+POST /firebase/register-token
+```
 
 ---
 
-## 7. Configure the INMP441 Microphones
+## 9. Configure the INMP441 Microphones
 
-Use the included:
+Install/configure the provided:
 
 ```text
 inmp441-stereo.dts
 ```
 
-to configure the Raspberry Pi stereo I2S microphone input.
+device-tree overlay as required by the Raspberry Pi system.
 
-After installing the device-tree overlay and rebooting, verify the device:
+Confirm the device:
 
 ```bash
 arecord -l
 ```
 
-The Python application expects the audio input device:
+The Python application expects an audio input device matching:
 
 ```text
 inmp441
@@ -919,7 +1372,7 @@ inmp441
 
 ---
 
-## 8. Upload Arduino Firmware
+## 10. Upload Arduino Firmware
 
 Upload:
 
@@ -927,61 +1380,71 @@ Upload:
 arduino/robot_controller/robot_controller.ino
 ```
 
-Required Arduino libraries include:
+to the Arduino Uno.
 
-- I2Cdev.
-- MPU6050.
-- Adafruit PWM Servo Driver Library.
-
-Serial configuration:
+The firmware depends on:
 
 ```text
-Baud rate: 115200
-Default Raspberry Pi device: /dev/ttyACM0
+Wire
+I2Cdev
+MPU6050
+Adafruit_PWMServoDriver
 ```
-
-Keep the robot stationary while the MPU-6050 is being calibrated.
 
 ---
 
-## 9. Verify Arduino Connection
+## 11. Verify Arduino Serial Communication
 
-Check the serial device:
+The Raspberry Pi application expects:
 
-```bash
-ls /dev/ttyACM*
+```text
+/dev/ttyACM0
 ```
 
-Then run:
-
-```bash
-python robot_project/hardware/test_arduino_serial.py
-```
-
-Expected communication includes:
+The Arduino should eventually report:
 
 ```text
 ARDUINO_READY
+```
+
+and respond to:
+
+```text
+PING
+```
+
+with:
+
+```text
 PONG
 ```
 
+Arduino connection failure is stored in the web status rather than terminating the entire Flask application.
+
 ---
 
-# Running the Robot
+# Running RoboCare
 
-Activate the environment:
+Activate the Python environment:
 
 ```bash
+cd ~/RobotProject
 source venv/bin/activate
 ```
 
-Start:
+Start the robot:
 
 ```bash
 python main.py
 ```
 
-Then open:
+The web application runs at:
+
+```text
+0.0.0.0:5000
+```
+
+From another device on the same network, open:
 
 ```text
 http://<raspberry-pi-ip>:5000
@@ -989,117 +1452,125 @@ http://<raspberry-pi-ip>:5000
 
 ---
 
-# Recommended Startup Procedure
+# Recommended Startup Checks
 
-1. Verify motor, servo, Raspberry Pi, and Arduino power.
-2. Keep the robot stationary while the IMU initializes.
-3. Confirm `/dev/ttyACM0`.
-4. Confirm the OAK-D camera.
-5. Confirm the INMP441 microphone device.
-6. Confirm all local AI model files.
-7. Confirm the Firebase service-account file.
-8. Start `main.py`.
-9. Check the camera stream.
-10. Check `/status`.
-11. Test emergency stop before running movement.
-12. Run the first physical movement test with the wheels lifted.
-13. Lower the robot only after movement direction and stopping behavior have been verified.
+Before autonomous operation, verify:
+
+```bash
+git status
+arecord -l
+ls models/oak/best.pt
+ls models/audio/openwakeword/hey_robo.onnx
+ls models/audio/vosk/vosk-model-small-en-us-0.15
+ls config/firebase-service-account.json
+```
+
+Also confirm:
+
+- OAK-D is connected.
+- Arduino appears at `/dev/ttyACM0`.
+- Motor and servo supplies are powered correctly.
+- Robot starts in a safe physical location.
+- The MPU-6050 remains stationary during startup calibration.
 
 ---
 
-# Navigation Calibration
+# Current Calibration Summary
 
-Important target-navigation calibration values are defined near the top of:
+## Standalone Navigation
 
 ```text
-robot_project/navigation/target_navigator.py
+Camera size:                     640 x 480
+Object center tolerance:          70 px
+Driving center tolerance:         95 px
+Pickup handoff distance:          15 cm
+Arduino pickup target:             5 cm
+Standalone distance conversion: 0.055 cm/ms
+Object return duration scale:     0.52
+Bin return duration scale:        0.40
+Runtime IMU recalibration:        disabled
 ```
 
-These include:
+## Deep Cleaning
 
-- Camera alignment tolerances.
-- Object approach zones.
-- Forward movement pulse durations.
-- Camera freshness limits.
-- Target-loss limits.
-- Ultrasonic handoff rules.
-- Bin alignment thresholds.
-- Bin approach thresholds.
-- Release distance.
-- Return distance calibration.
-- Post-release movement.
+```text
+Wall stop distance:               25 cm
+Maximum lane driving time:         8 s
+First transition turn:            83°
+Second transition turn:           83°
+Lane shift duration:             350 ms
+Maximum lanes:                     4
+Ignored class:        building_block
+```
 
-The return-distance calibration is physical and should be measured again if the floor, motors, battery, wheels, or robot weight change.
+## Audio
+
+```text
+Sample rate:                    16000 Hz
+Capture channels:                    2
+Model channels:                      1
+Wake-word threshold:              0.03
+Command-listening timeout:          30 s
+Baby-cry threshold:               0.60
+Cry window:                          1 s
+```
+
+These values were tuned for the final physical robot and may need recalibration if the mechanical or electrical configuration changes.
 
 ---
 
-# Deep-Cleaning Calibration
+# Current Limitations
 
-Important values are defined near the top of:
+The final project should be interpreted with the following implementation limits:
 
-```text
-robot_project/navigation/deep_cleaning_navigator.py
-```
-
-Most frequently adjusted values are:
-
-```python
-WALL_STOP_DISTANCE_CM = 25.0
-MAX_LANE_DRIVE_SECONDS = 8.0
-FIRST_TURN_ANGLE_DEGREES = 85.0
-SECOND_TURN_ANGLE_DEGREES = 83.0
-LANE_SHIFT_DURATION_MS = 400
-MAX_LANES = 4
-```
-
-Change one movement value at a time and test it physically before adjusting the next value.
+- Standalone return-home translation uses timed dead reckoning rather than wheel encoders.
+- Translational error can accumulate because there is no external localization system.
+- Runtime IMU recalibration between sorting cycles is currently disabled.
+- Deep-cleaning interruption return uses exact reverse movement replay and is separate from the standalone dead-reckoning return system.
+- `building_block` is intentionally ignored during deep-cleaning mode.
+- `obstacle_avoidance.py` exists as an isolated experimental helper but is not connected to the active navigation runtime.
+- Physical calibration values depend on the final robot, battery state, wheel behavior, and floor surface.
+- Software emergency stop functionality should not replace safe electrical and mechanical design.
 
 ---
 
-# Audio Calibration
+# Security Notes
 
-Important audio settings are defined in:
-
-```text
-robot_project/audio/config.py
-```
-
-Current important values include:
+The following should never be committed:
 
 ```text
-Sample rate:            16000 Hz
-Capture channels:       2
-Wake-word threshold:    0.30
-Baby-cry threshold:     0.25
-Command-listen period:  12 seconds
-Audio chunk samples:    1280
+config/firebase-service-account.json
+.env
+private credentials
+private keys
 ```
 
-Audio thresholds should be tuned using recordings from the actual robot environment.
+These are already covered by the repository `.gitignore` where applicable.
 
-Motor noise, fans, room echo, microphone placement, and speaker feedback can affect recognition.
+Firebase client registration tokens should also preferably be supplied dynamically or through local configuration rather than permanently stored in public source files.
 
 ---
 
-# Development Notes
+# Final Project Status
 
-When changing movement behavior:
+RoboCare was developed as a hardware graduation project integrating:
 
-1. Change one value at a time.
-2. Test with wheels raised first.
-3. Record the physical result.
-4. Adjust the calibration.
-5. Test again on the actual floor.
-6. Keep emergency stop immediately available.
+- Autonomous mobile robotics
+- Computer vision
+- Deep-learning object detection
+- Stereo depth
+- Embedded motor and servo control
+- IMU-based turning
+- Ultrasonic positioning
+- Robotic manipulation
+- Room-coverage navigation
+- Voice recognition
+- Environmental audio classification
+- Firebase notifications
+- Web and remote control
 
-When changing audio behavior:
+The repository represents the final completed implementation of the project.
 
-1. Test microphone capture independently.
-2. Test wake-word detection independently.
-3. Test Vosk commands independently.
-4. Test YAMNet independently.
-5. Test speaker playback independently.
-6. Only then run the combined audio-processing loop.
 
 ---
 

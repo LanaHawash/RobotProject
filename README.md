@@ -1,16 +1,3 @@
-hreshold:     0.25
-Command-listen period:  12 seconds
-Audio chunk samples:    1280
-```
-
-Audio thresholds should be tuned using recordings from the actual robot environment.
-
-Motor noise, fans, room echo, microphone placement, and speaker feedback can affect recognition.
-
----
-
-# Development Notes
-
 # RoboCare – Autonomous Toy-Sorting and Deep-Cleaning Robot
 
 **Final Graduation Hardware Project**
